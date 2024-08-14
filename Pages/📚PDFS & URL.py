@@ -69,7 +69,7 @@ def get_vectorstore_from_url(url):
 
 # Chat Handling Functions
 def get_conversation_chain(vectorstore):
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.6, streaming=True)
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.5, streaming=True)
     memory = ConversationBufferMemory(
         memory_key='chat_history', return_messages=True)
     conversation_chain = ConversationalRetrievalChain.from_llm(
@@ -293,6 +293,8 @@ def main():
             if process_url_button:
                 if not website_url.strip():
                     st.error("Bitte geben Sie eine Website-URL ein.")
+                elif not (website_url.strip().lower().startswith("https://") or website_url.strip().lower().startswith("http://")):
+                    st.warning("Bitte geben Sie eine gültige URL ein")
                 else:
                     with st.spinner("Website wird verarbeitet..."):
                         vectorstore_from_url = get_vectorstore_from_url(website_url)
@@ -332,7 +334,7 @@ def main():
         if st.session_state.chat_session_id:
             handle_userinput(user_question, db_session, st.session_state.chat_session_id)
         else:
-            st.error("Bitte beginnen Sie eine Chat, indem Sie eine PDF hochladen oder eine URL angeben.")
+            st.warning("Bitte laden Sie PDFs hoch oder geben Sie eine Website-URL ein, bevor Sie mit dem Chat beginnen.")
 
     # Display chat history in the main chat area only
     if st.session_state.chat_history:

@@ -193,6 +193,9 @@ def main():
         success_placeholder.success("Datenbankverbindung hergestellt")
         time.sleep(1)
         success_placeholder.empty()
+        st.write(bot_template.replace("{{MSG}}",
+                                      "Hallo, ich bin Sirius, der Chatbot-Assistent der HTW Berlin. Ich kann Ihnen bei Fragen zur Hochschulverwaltung helfen. Wie kann ich Ihnen heute helfen?"),
+                 unsafe_allow_html=True)
 
     # Handle the "New Chat" button click
     if st.sidebar.button("Neuer Chat"):
@@ -201,6 +204,7 @@ def main():
         st.session_state.chat_history = []  # Clear chat history
         st.session_state.selected_chat = None  # Reset selected chat to "None"
         st.rerun()  # Refresh the page to reflect the changes
+
 
     # List of previous chat sessions
     chat_sessions = st.session_state.db_session.query(ChatSession).all()
