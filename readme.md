@@ -1,12 +1,12 @@
 # Sirius-Chatbot für HTW-Studierende
 
-Willkommen im Sirius-Chatbot-Repository! Dieses Projekt wurde entwickelt, um einen natürlichen Sprach-SQL-Chatbot zur Informationsverwaltung an der HTW zu erstellen und die Verarbeitung von PDFs und URLs mithilfe von LLMs zu ermöglichen. Es ist Teil meiner Bachelorarbeit und nutzt das GPT-4-Modell von OpenAI, das in eine Streamlit-GUI integriert wurde, um eine optimierte Benutzerinteraktion zu gewährleisten.
+Willkommen im Sirius-Chatbot-Repository! Dieses Projekt wurde entwickelt, um einen natürlichen Sprach-SQL-Chatbot zur Informationsverwaltung an der HTW zu erstellen und die Verarbeitung von PDFs und URLs mithilfe von LLMs zu ermöglichen. Es ist Teil meiner Bachelorarbeit und nutzt das GPT-4o-Modell von OpenAI, das in eine Streamlit-GUI integriert wurde, um eine optimierte Benutzerinteraktion zu gewährleisten.
 
 ## 1. Homepage
 Die Homepage-Seite der Chatbot-Anwendung bietet eine intuitive Benutzeroberfläche für Studierende der HTW Berlin, um administrative Informationen abzurufen und mit einem intelligenten Chatbot zu interagieren. Durch die Integration von LangChain, SQLAlchemy, Dotenv und OpenAI entsteht eine leistungsstarke Plattform, die eine effektive Verwaltungskommunikation unterstützt.
 
 ## Funktionen 
-- **Natural Language Processing**: Verwendet GPT-4 zur Interpretation und Beantwortung von Benutzeranfragen in natürlicher Sprache.
+- **Natural Language Processing**: Verwendet GPT-4o zur Interpretation und Beantwortung von Benutzeranfragen in natürlicher Sprache.
 - **SQL-Abfrage-Erstellung**: Dynamische Erstellung von SQL-Abfragen basierend auf den Eingaben in natürlicher Sprache.
 - **Datenbankinteraktion**: Verbindung zu einer SQL-Datenbank zur Abfrage von Ergebnissen und zur Demonstration praktischer Datenbankinteraktionen.
 - **Streamlit GUI**: Benutzerfreundliche Oberfläche, entwickelt mit Streamlit, die eine einfache Nutzung für alle Fähigkeitsstufen ermöglicht.
@@ -22,7 +22,7 @@ Die Seite für PDFs und URLs demonstriert die Implementierung einer Funktionalit
 - **Textaufteilung**: Der extrahierte Text wird in kleinere Abschnitte unterteilt, die effektiv verarbeitet werden können.
 - **Sprachmodell**: Die Anwendung verwendet ein Sprachmodell zur Erstellung von Vektor-Repräsentationen (Embeddings) der Textabschnitte.
 - **Ähnlichkeitsabgleich**: Bei einer Anfrage vergleicht die App die Frage mit den Textabschnitten und identifiziert die semantisch ähnlichsten.
--**Antwortgenerierung**: Die ausgewählten Abschnitte werden an das Sprachmodell übergeben, das eine Antwort basierend auf dem relevanten Inhalt der PDFs erstellt.
+- **Antwortgenerierung**: Die ausgewählten Abschnitte werden an das Sprachmodell übergeben, das eine Antwort basierend auf dem relevanten Inhalt der PDFs erstellt.
 ## Funktionen für URLs
 - **URL-Verarbeitung**: Die Anwendung kann den Inhalt von angegebenen URLs laden und analysieren.
 - **Textextraktion**: Aus den geladenen Webseiten wird der Textinhalt extrahiert, um nützliche Informationen zu gewinnen.
