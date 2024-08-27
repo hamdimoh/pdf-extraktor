@@ -31,17 +31,17 @@ Die Seite für PDFs und URLs demonstriert die Implementierung einer Funktionalit
 - **Antwortgenerierung**: Basierend auf dem relevanten Inhalt der URLs wird eine passende Antwort durch das Sprachmodell erstellt.
 
 ## Installation
-Stelle sicher, dass Python 3.9 auf deinem System installiert ist, Klone dieses Repository.
+Stellen Sie sicher, dass Python 3.9 auf Ihrem System installiert ist, und klonen Sie dieses Repository.
 
 
 
-Installiere die benötigten Pakete:
+Installieren Sie die benötigten Pakete:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Erstelle eine .env-Datei im Hauptverzeichnis des Projekts mit den erforderlichen Variablen. Füge insbesondere deinen OpenAI API-Schlüssel hinzu:
+Erstellen Sie eine .env-Datei im Hauptverzeichnis des Projekts mit den erforderlichen Variablen. Fügen Sie insbesondere Ihren OpenAI API-Schlüssel hinzu.
 
 ```
 OPENAI_API_KEY=[your-openai-api-key]
@@ -49,7 +49,7 @@ OPENAI_API_KEY=[your-openai-api-key]
 
 ## Nutzung
 
-Um die Streamlit-Anwendung zu starten und mit dem Chatbot zu interagieren, führe den folgenden Befehl aus:
+Um die Streamlit-Anwendung zu starten und mit dem Chatbot zu interagieren, führen Sie den folgenden Befehl aus:
 
 ```bash
 streamlit run 🏠Homepage.py
@@ -59,20 +59,20 @@ streamlit run 🏠Homepage.py
 
 Um die Verbindung zur Datenbank herzustellen, müssen in zwei Dateien Anpassungen vorgenommen werden:
 
-**In der homepage.py-Datei:**
-- Öffne die Datei und suche die connect_to_database-Funktion.
-- Passe die db_uri-Variable in Zeile 34 an:
+**In der  🏠Homepage.py.py-Datei:**
+- Öffnen Sie die Datei und suchen Sie die connect_to_database-Funktion.
+- Passen Sie die db_uri-Variable in Zeile 34 an:
 ```
 db_uri = "mysql+mysqlconnector://user:password@host:port/database"
 ```
 
-**In der PDFS&URL.py-Datei:**
-- Öffne die Datei und suche die connect_to_database-Funktion.
-- Passe die db_uri-Variable in Zeile 134 an:
+**In der 📚PDFS & URL.py-Datei:**
+- Öffnen Sie die Datei und suchen Sie die connect_to_database-Funktion.
+- Passen Sie die db_uri-Variable in Zeile 134 an:
 ```
 db_uri = "mysql+mysqlconnector://user:password@host:port/database"
 ```
-Ersetze user, password, host, port und database durch deine tatsächlichen Datenbank-Zugangsdaten.
+Ersetzen Sie user, password, host, port und database durch Ihre tatsächlichen Datenbank-Zugangsdaten.
 
 ## Lizenz
 Dieses Projekt ist unter der MIT-Lizenz lizenziert. Weitere Einzelheiten findest du in der LICENSE-Datei.
