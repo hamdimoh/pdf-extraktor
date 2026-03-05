@@ -1,6 +1,10 @@
 import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import streamlit as st
+
+# 1. WICHTIG: Das MUSS der allererste Streamlit-Befehl sein!
+st.set_page_config(page_title="PDF Extraktor", page_icon="⚡", layout="wide")
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import tempfile
 import json
 import pandas as pd
@@ -16,16 +20,21 @@ import pytesseract
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_mistralai import ChatMistralAI
-
-# --- IMPORTS FÜR KOORDINATEN-UMRECHNUNG ---
 from pyproj import Transformer
 
-# ---------------- CONFIG ----------------
+# ---------------- CONFIG & API KEY SICHERN ----------------
 load_dotenv()
-if not os.getenv("MISTRAL_API_KEY"):
-    st.error("⚠️ MISTRAL_API_KEY fehlt in der .env Datei!")
-    st.stop()
 
+# Streamlit Cloud sucht den Key in den Secrets
+try:
+    if "MISTRAL_API_KEY" in st.secrets:
+        os.environ["MISTRAL_API_KEY"] = st.secrets["MISTRAL_API_KEY"]
+except:
+    pass
+
+if not os.getenv("MISTRAL_API_KEY"):
+    st.error("⚠️ MISTRAL_API_KEY fehlt in den Secrets oder der .env Datei!")
+    st.stop()
 
 # ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) ----------------
 def read_pdfs_tesseract(files):
@@ -111,7 +120,6 @@ def post_process_coordinates(data):
             
     return data
 
-# ---------------- HELPER: ALLE DATEN IN JEDE WEA KOPIEREN (OHNE MATHEMATIK) ----------------
 # ---------------- HELPER: ALLE DATEN IN JEDE WEA KOPIEREN & FLÄCHEN TEILEN ----------------
 def restructure_and_calculate_data(data):
     wea_list = data.get("2_WEA_Details", [])
@@ -525,7 +533,7 @@ def extract_all_data(text):
     DOKUMENT (Gefilterte Textauszüge):
     {context}
     """
-    
+
     # Modelle mit Temperatur 0 für maximale deterministische Präzision
     llm = ChatMistralAI(model="mistral-large-2411", temperature=0.0, timeout=300, max_retries=2)
     
@@ -590,7 +598,6 @@ def extract_all_data(text):
     
 # ---------------- MAIN UI ----------------
 def main():
-    st.set_page_config("(Tesseract + Mistral)", "⚡", layout="wide")
     st.title("PDF Extraktor")
 
     if "full_result" not in st.session_state: st.session_state.full_result = {}
