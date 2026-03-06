@@ -824,16 +824,76 @@ def main():
             st.session_state.full_result = extract_all_data(st.session_state.extracted_text)
 
     # --- ANZEIGE ---
-    tab1, tab2 = st.tabs(["📊 Ergebnis & JSON", "📝 Extrahierter Text (Tesseract)"])
+    tab1, tab2 = st.tabs(["📊 Ergebnis Dashboard", "📝 Extrahierter Text (Tesseract)"])
     
     with tab1:
         if st.session_state.full_result:
-            st.subheader("Deine Anlagen-Steckbriefe (Fertig für MongoDB / Excel!)")
-            st.json(st.session_state.full_result)
+            res = st.session_state.full_result
+            
+            # --- 1. METADATEN (ALLGEMEIN) ---
+            st.header("🏢 Allgemeine Projektdaten")
+            meta = res.get("1_MetaData_Allgemein", {})
+            
+            # Die Top-3 Infos als schöne große Kennzahlen
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Aktenzeichen", meta.get("Aktenzeichen (Az)", "-"))
+            col2.metric("Genehmigungsdatum", meta.get("Genehmigungsdatum", "-"))
+            col3.metric("Vorhabenträger", meta.get("Vorhabenträger", "-"))
+            
+            # Den Rest der Metadaten in einen ausklappbaren Bereich
+            with st.expander("Weitere allgemeine Daten anzeigen", expanded=False):
+                meta_df = pd.DataFrame(list(meta.items()), columns=["Eigenschaft", "Wert"])
+                st.dataframe(meta_df, hide_index=True, use_container_width=True)
             
             st.divider()
-            st.subheader("Zum Kopieren (JSON)")
-            st.code(json.dumps(st.session_state.full_result, indent=4, ensure_ascii=False), language="json")
+
+            # --- 2. ANLAGEN-DETAILS (WEA) ---
+            st.header("🌀 Anlagen-Steckbriefe")
+            weas = res.get("2_WEA_Details", [])
+            
+            if weas:
+                # Wir holen uns die Namen der WEAs für die Reiter-Titel
+                wea_names = [wea.get("2_Technik_Standort", {}).get("Anlagen-Nr. / Kennzeichnung", f"WEA {i+1}") for i, wea in enumerate(weas)]
+                
+                # Wir erstellen für jede WEA einen eigenen Reiter (Tab)
+                wea_tabs = st.tabs(wea_names)
+                
+                for i, wea_tab in enumerate(wea_tabs):
+                    with wea_tab:
+                        wea_data = weas[i]
+                        tech = wea_data.get("2_Technik_Standort", {})
+                        flaeche = wea_data.get("3_Flaechen_und_Abstaende", {})
+                        stroem = wea_data.get("4_Stroem", {})
+                        
+                        # Bildschirm in 3 Spalten aufteilen
+                        c1, c2, c3 = st.columns(3)
+                        
+                        with c1:
+                            st.subheader("⚙️ Technik")
+                            tech_df = pd.DataFrame(list(tech.items()), columns=["Eigenschaft", "Wert"])
+                            st.dataframe(tech_df, hide_index=True, use_container_width=True)
+                            
+                        with c2:
+                            st.subheader("📏 Flächen")
+                            flaeche_df = pd.DataFrame(list(flaeche.items()), columns=["Eigenschaft", "Wert"])
+                            st.dataframe(flaeche_df, hide_index=True, use_container_width=True)
+                            
+                        with c3:
+                            st.subheader("🛑 Abschaltungen")
+                            # Leere Einträge rausfiltern, damit die Tabelle übersichtlich bleibt
+                            stroem_clean = {k: v for k, v in stroem.items() if v and str(v).strip() != ""}
+                            if stroem_clean:
+                                stroem_df = pd.DataFrame(list(stroem_clean.items()), columns=["Regel", "Wert"])
+                                st.dataframe(stroem_df, hide_index=True, use_container_width=True)
+                            else:
+                                st.info("Keine spezifischen Abschaltungen gefunden.")
+
+            st.divider()
+            
+            # --- 3. DOWNLOAD / JSON FÜR IT ---
+            with st.expander("🛠️ Rohdaten (JSON) für Datenbank / Export anzeigen"):
+                st.code(json.dumps(st.session_state.full_result, indent=4, ensure_ascii=False), language="json")
+
         else:
             st.info("Bitte Dokumente hochladen und die Schritte 1 bis 3 ausführen.")
 
