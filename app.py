@@ -12,8 +12,9 @@ import time
 import re
 from dotenv import load_dotenv
 
-# --- IMPORTS FÜR BLITZSCHNELLES LOKALES OCR ---
-from pdf2image import convert_from_bytes
+# --- NEU: IMPORTS FÜR RAM-SCHONENDES LOKALES OCR ---
+import gc
+from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 import pytesseract
 
 # --- IMPORTS FÜR KI-EXTRAKTION ---
@@ -40,7 +41,7 @@ else:
     st.error("⚠️ MISTRAL_API_KEY fehlt in den Secrets oder der .env Datei!")
     st.stop()
 
-# ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) ----------------
+# ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) - RAM SCHONEND ----------------
 def read_pdfs_tesseract(files):
     full_text = ""
     progress_bar = st.progress(0)
@@ -49,19 +50,39 @@ def read_pdfs_tesseract(files):
 
     for i, f in enumerate(files):
         start_time = time.time()
-        status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Tesseract OCR)...")
+        status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Analysiere PDF-Struktur)...")
         
         pdf_bytes = f.getvalue()
-        images = convert_from_bytes(pdf_bytes, dpi=200)
         
+        try:
+            # Nur die Info abrufen, wie viele Seiten das PDF hat (spart extrem viel RAM)
+            info = pdfinfo_from_bytes(pdf_bytes)
+            total_pages = info["Pages"]
+        except Exception as e:
+            st.error(f"Fehler beim Lesen der PDF-Info für {f.name}: {e}")
+            continue
+            
         doc_text = ""
-        for page_num, img in enumerate(images):
+        
+        # Schleife: Immer nur EINE Seite in den Speicher laden
+        for page_num in range(1, total_pages + 1):
+            status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Scanne Seite {page_num} von {total_pages})...")
+            
+            # dpi 150 ist optimal: Spart 40% RAM gegenüber 200 dpi, aber Tesseract liest es trotzdem fehlerfrei
+            images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
+            img = images[0]
+            
             try:
                 text = pytesseract.image_to_string(img, lang='deu')
             except:
                 text = pytesseract.image_to_string(img, lang='eng')
                 
-            doc_text += f"\n\n--- SEITE {page_num + 1} ---\n{text}\n"
+            doc_text += f"\n\n--- SEITE {page_num} ---\n{text}\n"
+            
+            # SPEICHER SOFORT LEEREN, BEVOR DIE NÄCHSTE SEITE GELADEN WIRD
+            del img
+            del images
+            gc.collect() 
             
         full_text += f"\n\n--- DOKUMENT START: {f.name} ---\n{doc_text}\n--- DOKUMENT ENDE ---\n"
         
@@ -795,7 +816,7 @@ def extract_all_data(text):
         else:
             st.error(f"Kritischer Fehler bei der API-Abfrage: {e}")
         return {}
-    
+
 # ---------------- MAIN UI ----------------
 def main():
     st.title("PDF Extraktor")
