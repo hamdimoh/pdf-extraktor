@@ -265,7 +265,7 @@ def extract_all_data(text):
         context_window_stroem += text[max(0, idx - 1000):min(len(text), idx + 1000)] + "\n...\n"
 
     # ==========================================
-    # PROMPT 1: ALLES AUSSER SPEZIFISCHE FLÄCHEN (1:1 ORIGINAL)
+    # PROMPT 1: ALLES AUSSER SPEZIFISCHE FLÄCHEN (VERIFIZIERT & PRÄZISE)
     # ==========================================
     template_main = """
     DU BIST EIN GNADENLOSER DATEN-EXTRAKTOR FÜR GENEHMIGUNGSBESCHEIDE.
@@ -499,62 +499,83 @@ def extract_all_data(text):
     """
 
     # ==========================================
-    # PROMPT 2: FLÄCHEN (1:1 ORIGINAL)
+    # PROMPT 2: FLÄCHEN (MAXIMAL OPTIMIERT - v3)
     # ==========================================
     template_areas = """
-    DU DARFST AUSSCHLIESSLICH FOLGENDE DREI FLÄCHEN EXTRAHIEREN:
-    1) Fundamentfläche (Mast)
-    2) Zuwegungsfläche (nur Wege)
-    3) Kranstellfläche (nur Betriebsfläche)
+    FLÄCHEN-EXTRAKTION FÜR WINDENERGIEANLAGEN
 
-    WICHTIGE GRUNDREGELN:
-    1. Wenn ein Wert nicht eindeutig gefunden wird, schreibe "".
-    2. GIB GENAU EIN (1) ZUSAMMENHÄNGENDES JSON-OBJEKT ZURÜCK!
-    3. WENN DU BEI "Genannt?" EIN "Ja" EINTRÄGST, BIST DU GEZWUNGEN, DIE GEFUNDENE ZAHL BEI m² ODER ha EINZUTRAGEN! LASS ES NIEMALS LEER!
-    4. Das Dokument kann sehr lang sein. Es muss der gesamte Textauszug durchsucht werden, auch wenn relevante Begriffe weit auseinander stehen.
-    5. VERBOT: Es dürfen KEINE Flächen durch Division, Mittelwertbildung oder rechnerische Aufteilung erzeugt werden! Nimm exakt die Zahl, die im Text steht.
+    Extrahiere ausschließlich drei Flächentypen:
 
-    -------------------------------------------------------
-    ALLGEMEINE FLÄCHEN-REGELN (SEHR WICHTIG):
-    1. EINHEITEN-PFLICHT: Extrahiere NUR Zahlen, bei denen direkt die Einheit m², qm, ha oder Hektar steht. Ignoriere alle Zahlen ohne Flächeneinheit oder unklare Dezimalzahlen!
-    2. SATZ-REGEL: Die Zahl muss im SELBEN SATZ (oder max. 1 Satz davor/danach wegen OCR-Fehlern) wie das jeweilige Schlüsselwort stehen.
-    3. DAUERHAFTIGKEIT: Ignoriere temporäre Flächen (z.B. "temporär", "bauzeitlich", "Lagerflächen", "nach Bauende rückgebaut"). Wir suchen nur die dauerhafte Inanspruchnahme/Versiegelung. Wenn mehrere Zahlen im gleichen Kontext stehen, nimm die Zahl mit dauerhaftem Flächenbezug ("dauerhaft versiegelt", "anlagenbedingt").
-    4. UMRECHNUNG: Wenn nur eine Einheit vorhanden ist, rechne automatisch um und fülle BEIDE Felder: 1 ha = 10.000 m² / 10.000 m² = 1 ha.
-    5. ANTI-FEHLER-REGEL: Die KI darf KEINE Zahl unter 100 m² extrahieren, es sei denn, sie wird ausdrücklich "Fundamentfläche" oder "Mast" genannt! Das verhindert falsche Extraktionen von Rotorblattüberstrichen oder Kabellängen.
+    1. Fundamentfläche (Mast / Turm)
+    2. Zuwegungsfläche (Wege)
+    3. Kranstellfläche
 
-    -------------------------------------------------------
-    WICHTIGE NEGATIV-REGEL FÜR FLÄCHEN
-    Folgende Flächen dürfen NIEMALS für Mast, Zuwegung oder Kran verwendet werden: Waldumwandlung, Ausgleichsmaßnahmen, Kompensationsflächen, Ersatzmaßnahmen, Bauphasenflächen. Diese sind IMMER zu ignorieren.
+    --------------------------------------------------
 
-    -------------------------------------------------------
-    A) FLÄCHE MAST
-    - "Fläche Mast (Genannt?)": "Ja" oder "Nein".
-    - "Fläche Mast ($m^2$)" / "($ha$)": TRAGE HIER DIE ZAHL EIN!
-    REGEL: Zahl übernehmen, wenn Begriffe wie Fundament, Fundamentfläche, Turmfuß, Mast, Aufstandsfläche genannt werden.
+    SCHLÜSSELWÖRTER
 
-    -------------------------------------------------------
-    B) FLÄCHE ZUWEGUNG
-    - "Fläche Zuwegung (Genannt?)": "Ja" oder "Nein".
-    - "Fläche Zuwegung ($m^2$)" / "($ha$)": TRAGE HIER DIE ZAHL EIN!
-    
-    1. STUFE: Wenn im Text explizit eine Fläche mit Begriffen wie Zuwegung, Zuwegungen, Zuwegungsfläche, Zufahrt, Wegeausbau, Weg genannt wird -> Zahl extrahieren.
-    2. STUFE: Wenn die Fläche gemeinsam mit Kranstellflächen genannt wird (z.B. "Kranstellflächen und Zuwegungen"):
-       - Wenn KEINE separate Fläche für Kranstellflächen existiert -> Gesamtzahl übernehmen.
-       - Wenn separate Kranfläche existiert -> NUR die explizite Zuwegungsfläche übernehmen. NICHT rechnen oder schätzen!
-    3. STUFE: Wenn keine eindeutige Zuordnung möglich ist oder nur eine undefinierte Gesamtversiegelung genannt wird -> Feld leer lassen "".
+    Fundament:
+    Fundament, Fundamentfläche, Turmfundament, Mastfundament,
+    Turmfuß, Aufstandsfläche
 
-    -------------------------------------------------------
-    C) KRANSTELLFLÄCHE
-    - "Fläche Kran (Genannt?)": "Ja" oder "Nein".
-    - "Fläche Kran ($m^2$)" / "($ha$)": TRAGE HIER DIE ZAHL EIN!
-    REGEL: Zahl übernehmen, wenn Begriffe wie Kranstellfläche, Kranfläche, Montagefläche genannt werden. (Achtung: Wenn bei Zuwegung eine kombinierte Zahl eingetragen wurde, diese hier nicht doppelt eintragen).
+    Zuwegung:
+    Zuwegung, Zuwegungen, Zuwegungsfläche, Zufahrt,
+    Erschließungsweg, Wegeausbau, Feldweg,
+    Wirtschaftsweg, Weg
 
-    -------------------------------------------------------
-    SONDERFLÄCHEN:
-    - "Waldumwandlung notwendig?": (Ja/Nein)
-    - "Flächen für Waldersatz (in km2)": Nur die Zahl.
+    Kranfläche:
+    Kranstellfläche, Kranfläche, Montagefläche,
+    Rüstfläche, Betriebsfläche
 
-    GIB NUR DIESES JSON ZURÜCK:
+    --------------------------------------------------
+
+    SUCHREGELN
+
+    1. Extrahiere nur Zahlen mit Einheiten:
+    m², qm, ha, Hektar.
+
+    2. Die Zahl darf im selben Satz oder
+    bis zu drei Sätze entfernt vom
+    Schlüsselwort stehen.
+
+    3. Temporäre Flächen ignorieren:
+    temporär, bauzeitlich, Baustelle,
+    Lagerfläche.
+
+    4. Wenn im Dokument steht:
+
+    "Kranstellflächen und Zuwegungen 16.645 m²"
+
+    → Wert NUR bei Zuwegung eintragen.
+
+    5. Wenn eine Fläche ausdrücklich
+    "je Anlage" oder "je WEA" genannt wird,
+    übernehme diesen Wert.
+
+    6. Wenn nur eine Gesamtfläche genannt wird,
+    übernehme sie ohne Berechnung.
+
+    8. JE-ANLAGE-REGEL:
+    Wenn im Text die Begriffe "je Anlage", "je WEA", "pro Anlage", "pro WEA"
+    nicht vorkommen, dann handelt es sich wahrscheinlich um eine Gesamtfläche.
+    In diesem Fall:
+    → trage die Fläche nur einmal ein
+    → kopiere sie NICHT automatisch auf jede WEA.
+
+    9. FUNDAMENT-PLAUSIBILITÄT:
+    Fundamentfläche von Windenergieanlagen liegt typischerweise zwischen 300 m² und 1500 m².
+    Wenn eine gefundene Fläche kleiner als 200 m² ist, prüfe besonders kritisch, ob sie
+    wirklich zum Fundament gehört (oft ist es Kleininfrastruktur wie ein Trafo).
+    Wenn eine Fundamentfläche > 5000 m² ist → wahrscheinlich Park-Gesamtfläche → NICHT als
+    Einzel-Fundament übernehmen!
+
+    10. KRAN-PLAUSIBILITÄT:
+    Kranstellflächen liegen meist zwischen 1000 m² und 4000 m².
+    Wenn eine Zahl deutlich kleiner ist (z.B. 200–400 m²), handelt es sich wahrscheinlich
+    NICHT um die vollständige Kranstellfläche.
+
+    --------------------------------------------------
+
     {{
       "Waldumwandlung notwendig?": "",
       "Flächen für Waldersatz (in km2)": "",
@@ -775,27 +796,27 @@ def extract_all_data(text):
 
     try:
         # Phase 1
-        status_text.info("🧠 Phase 1/3: Extrahiere Metadaten & Technik...")
+        status_text.info("Phase 1/3: Extrahiere Metadaten & Technik...")
         res_main = chain_main.invoke({"context": context_window_main})
         json_main = parse_llm_json(res_main)
         if not json_main: return {}
         time.sleep(2)
 
         # Phase 2
-        status_text.info("🎯 Phase 2/3: Scharfschützen-Extraktion der Flächen...")
+        status_text.info("Phase 2/3: Scharfschützen-Extraktion der Flächen...")
         res_areas = chain_areas.invoke({"context": context_window_areas})
         json_areas = parse_llm_json(res_areas)
         if not json_areas: json_areas = {}
         time.sleep(2)
 
         # Phase 3
-        status_text.info("⚡ Phase 3/3: Extrahiere Ström-Daten (Abschaltungen, Schall, Vögel, Eis)...")
+        status_text.info("Phase 3/3: Extrahiere Ström-Daten (Abschaltungen, Schall, Vögel, Eis)...")
         res_stroem = chain_stroem.invoke({"context": context_window_stroem})
         json_stroem = parse_llm_json(res_stroem)
         if not json_stroem: json_stroem = {"4_Stroem": []}
 
         # Daten zusammenführen
-        status_text.info("⚙️ Führe Daten zusammen und bereite Tabellen vor...")
+        status_text.info("Führe Daten zusammen und bereite Tabellen vor...")
         if "3_Flaechen" not in json_main: json_main["3_Flaechen"] = {}
         json_main["3_Flaechen"].update(json_areas)
         
@@ -806,7 +827,7 @@ def extract_all_data(text):
         final_data = post_process_coordinates(json_main)
         final_data = restructure_and_calculate_data(final_data, stroem_liste)
         
-        status_text.success("✅ Extraktion erfolgreich in 3 Phasen abgeschlossen!")
+        status_text.success("Extraktion erfolgreich in 3 Phasen abgeschlossen!")
         return final_data
         
     except Exception as e:
@@ -830,14 +851,14 @@ def main():
         
         st.write("---")
         st.header("2. Text lokal auslesen")
-        if st.button(" Start Lokale OCR"):
+        if st.button("Start Lokale OCR"):
             if pdfs:
                 with st.spinner("Lese Text...."):
                     st.session_state.extracted_text = read_pdfs_tesseract(pdfs)
 
         st.write("---")
         st.header("3. Daten Extrahieren")
-        if st.button(" Start KI-Extraktion"):
+        if st.button("Start KI-Extraktion"):
             if not st.session_state.extracted_text:
                 st.error("Bitte zuerst Text einlesen (Schritt 2)!")
                 st.stop()
@@ -845,31 +866,40 @@ def main():
             st.session_state.full_result = extract_all_data(st.session_state.extracted_text)
 
     # --- ANZEIGE ---
-    tab1, tab2 = st.tabs(["📊 Ergebnis Dashboard", "📝 Extrahierter Text (Tesseract)"])
+    tab1, tab2 = st.tabs(["Ergebnis Dashboard", "Extrahierter Text (Tesseract)"])
     
     with tab1:
         if st.session_state.full_result:
             res = st.session_state.full_result
             
             # --- 1. METADATEN (ALLGEMEIN) ---
-            st.header("🏢 Allgemeine Projektdaten")
+            st.header("Allgemeine Projektdaten")
+            
+            # Hole Metadaten aus dem Root-Objekt oder der ersten WEA (da es in restructure_and_calculate_data in die Anlagen verschoben wird)
             meta = res.get("1_MetaData_Allgemein", {})
+            if not meta and res.get("2_WEA_Details"):
+                meta = res["2_WEA_Details"][0].get("1_MetaData_Allgemein", {})
+            
+            def get_meta_val(key):
+                val = meta.get(key, "")
+                return val if val and str(val).strip() != "" else "-"
             
             # Die Top-3 Infos als schöne große Kennzahlen
             col1, col2, col3 = st.columns(3)
-            col1.metric("Aktenzeichen", meta.get("Aktenzeichen (Az)", "-"))
-            col2.metric("Genehmigungsdatum", meta.get("Genehmigungsdatum", "-"))
-            col3.metric("Vorhabenträger", meta.get("Vorhabenträger", "-"))
+            col1.metric("Aktenzeichen", get_meta_val("Aktenzeichen (Az)"))
+            col2.metric("Genehmigungsdatum", get_meta_val("Genehmigungsdatum"))
+            col3.metric("Vorhabenträger", get_meta_val("Vorhabenträger"))
             
             # Den Rest der Metadaten in einen ausklappbaren Bereich
-            with st.expander("Weitere allgemeine Daten anzeigen", expanded=False):
-                meta_df = pd.DataFrame(list(meta.items()), columns=["Eigenschaft", "Wert"])
+            with st.expander("Weitere allgemeine Daten", expanded=False):
+                display_meta = {k: (v if v and str(v).strip() != "" else "-") for k, v in meta.items()}
+                meta_df = pd.DataFrame(list(display_meta.items()), columns=["Eigenschaft", "Wert"])
                 st.dataframe(meta_df, hide_index=True, use_container_width=True)
             
             st.divider()
 
-            # --- 2. ANLAGEN-DETAILS (WEA) ---
-            st.header("🌀 Anlagen-Steckbriefe")
+            # --- 2. TECHNISCHE ANLAGENÜBERSICHT (WEA) ---
+            st.header("Technische Anlagenübersicht")
             weas = res.get("2_WEA_Details", [])
             
             if weas:
@@ -889,30 +919,41 @@ def main():
                         # Bildschirm in 3 Spalten aufteilen
                         c1, c2, c3 = st.columns(3)
                         
+                        # --- Spalte 1: Technik & Standort ---
                         with c1:
-                            st.subheader("⚙️ Technik")
-                            tech_df = pd.DataFrame(list(tech.items()), columns=["Eigenschaft", "Wert"])
-                            st.dataframe(tech_df, hide_index=True, use_container_width=True)
-                            
+                            st.subheader("Meta-Daten")
+                            # Leere Einträge rausfiltern
+                            tech_clean = {k: v for k, v in tech.items() if v and str(v).strip() != ""}
+                            if tech_clean:
+                                tech_df = pd.DataFrame(list(tech_clean.items()), columns=["Eigenschaft", "Wert"])
+                                st.dataframe(tech_df, hide_index=True, use_container_width=True)
+                            else:
+                                st.info("Keine technischen Spezifikationen gefunden.")
+                                
+                        # --- Spalte 2: Flächen & Abstände ---
                         with c2:
-                            st.subheader("📏 Flächen")
-                            flaeche_df = pd.DataFrame(list(flaeche.items()), columns=["Eigenschaft", "Wert"])
-                            st.dataframe(flaeche_df, hide_index=True, use_container_width=True)
-                            
+                            st.subheader("FlächenDaten")
+                            flaeche_clean = {k: v for k, v in flaeche.items() if v and str(v).strip() != ""}
+                            if flaeche_clean:
+                                flaeche_df = pd.DataFrame(list(flaeche_clean.items()), columns=["Eigenschaft", "Wert"])
+                                st.dataframe(flaeche_df, hide_index=True, use_container_width=True)
+                            else:
+                                st.info("Keine Flächen- oder Abstandsangaben gefunden.")
+                                
+                        # --- Spalte 3: Ström & Abschaltungen ---
                         with c3:
-                            st.subheader("🛑 Abschaltungen")
-                            # Leere Einträge rausfiltern, damit die Tabelle übersichtlich bleibt
+                            st.subheader("strömDaten")
                             stroem_clean = {k: v for k, v in stroem.items() if v and str(v).strip() != ""}
                             if stroem_clean:
                                 stroem_df = pd.DataFrame(list(stroem_clean.items()), columns=["Regel", "Wert"])
                                 st.dataframe(stroem_df, hide_index=True, use_container_width=True)
                             else:
-                                st.info("Keine spezifischen Abschaltungen gefunden.")
+                                st.info("Keine spezifischen Betriebs-Regulationen gefunden.")
 
             st.divider()
             
             # --- 3. DOWNLOAD / JSON FÜR IT ---
-            with st.expander("🛠️ Rohdaten (JSON) für Datenbank / Export anzeigen"):
+            with st.expander("Rohdaten (JSON) für Datenbank / Export anzeigen"):
                 st.code(json.dumps(st.session_state.full_result, indent=4, ensure_ascii=False), language="json")
 
         else:
