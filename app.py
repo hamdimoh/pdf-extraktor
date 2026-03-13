@@ -189,7 +189,7 @@ def restructure_and_calculate_data(data, stroem_list):
             wea_flaechen["Fläche Kran ($m^2$)"] = divide_val(wea_flaechen.get("Fläche Kran ($m^2$)", ""), num_weas)
             wea_flaechen["Fläche Kran ($ha$)"] = divide_val(wea_flaechen.get("Fläche Kran ($ha$)", ""), num_weas)
             
-            # Ordne die Ström-Daten der richtigen WEA zu
+            # Ordne die Strom-Daten der richtigen WEA zu
             wea_stroem = {}
             for st_item in stroem_list:
                 if st_item.get("Anlagen-Nr. / Kennzeichnung") == wea_kennzeichnung:
@@ -250,7 +250,7 @@ def extract_all_data(text):
     for idx in filtered_matches[-35:]:
         context_window_areas += text[max(0, idx - 1000):min(len(text), idx + 1000)] + "\n...\n"
 
-    # --- KONTEXT FÜR CALL 3 (STRÖM / ABSCHALTUNGEN) ---
+    # --- KONTEXT FÜR CALL 3 (Strom / ABSCHALTUNGEN) ---
     context_window_stroem = ""
     stroem_matches = [m.start() for m in re.finditer(r'(?i)abschalt|betrieb|schall|fledermaus|vogel|milan|mahd|ernte|pflug|eisansatz|eiserkennung|schatten|radar|antikollision|kamera|identiflight|monitoring|nacht|lärm|rotorblattheizung|flight\s*manager|immission', text)]
     
@@ -299,6 +299,10 @@ def extract_all_data(text):
 
     FINANZEN:
     - Rückbaukosten / Bürgschaft (€): Nur wenn ausdrücklich als Sicherheitsleistung / Bürgschaft genannt.
+
+    RÜCKBAU VON ALTANLAGEN:
+- "Rückbau von Altanlagen (Ja/Nein)": Trage "Ja" ein, wenn im Text erwähnt wird, dass bestehende Anlagen/Altanlagen abgebaut, zurückgebaut oder demontiert werden (oft im Kontext von Repowering). Andernfalls trage "Nein" oder "" ein.
+- "Bezeichnung abgebauter Altanlagen": Wenn Altanlagen zurückgebaut werden, extrahiere hier EXAKT die Kennzeichnungen oder Namen dieser alten Anlagen (z.B. "Altanlage WEA01, WEA03"). Wenn keine spezifischen Namen genannt werden, schreibe "".
 
     -------------------------------------------------------
     TEIL 2: WEA-STECKBRIEFE
@@ -377,7 +381,9 @@ def extract_all_data(text):
           "UTM 32 Koordinaten (Rechtswert/E)": "",
           "UTM 32 Koordinaten (Hochwert/N)": "",
           "UTM 33 Koordinaten (Rechtswert/E)": "",
-          "UTM 33 Koordinaten (Hochwert/N)": ""
+          "UTM 33 Koordinaten (Hochwert/N)": "",
+          "Rückbau von Altanlagen (Ja/Nein)": "",
+        "Bezeichnung abgebauter Altanlagen": ""
         }}
       ],
       "3_Flaechen": {{
@@ -491,11 +497,7 @@ def extract_all_data(text):
         "Verbot neuer Wege in bestimmten Bereichen": "",
         "Begrenzung der Wegebreite": "",
         "Nutzung bestehender Wege zwingend vorgeschrieben": ""
-      }},
-      "4_Stroem": {{
-        "Abstände Infrastruktur & Radar": ""
       }}
-    }}
     """
 
     # ==========================================
@@ -595,7 +597,7 @@ def extract_all_data(text):
     """
 
     # ==========================================
-    # PROMPT 3: STRÖM (ABSCHALTUNGEN)
+    # PROMPT 3: Strom (ABSCHALTUNGEN)
     # ==========================================
     template_stroem = """
     DU BIST EIN DATEN-EXTRAKTOR. EXTRAHIERE ALLE BETRIEBSABSCHALTUNGEN UND REGULATIONEN FÜR JEDE WINDKRAFTANLAGE (WEA).
@@ -633,7 +635,7 @@ def extract_all_data(text):
     Wenn eine Vogelart im selben Absatz wie eine Abschaltung, ein Bewirtschaftungsradius oder eine landwirtschaftliche Abschaltung genannt wird, extrahiere die Vogelart.
     
     Typische Arten:
-    Weißstorch, Rotmilan, Schwarzmilan, Wiesenweihe, Rohrweihe, Grauammer, Bussardarten, Greifvögel (Rotmilan), Mäusebussard, Kollisionsgefährdete Vogelarten (Wespenbussard), Baumfalke, Kornweihe, Großvögel.
+Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
 
     Beispiel:
     "Zum Schutz des Weißstorchs ist ein Bewirtschaftungsradius von 150 m um die WEA einzuhalten."
@@ -810,7 +812,7 @@ def extract_all_data(text):
         time.sleep(2)
 
         # Phase 3
-        status_text.info("Phase 3/3: Extrahiere Ström-Daten (Abschaltungen, Schall, Vögel, Eis)...")
+        status_text.info("Phase 3/3: Extrahiere Strom-Daten (Abschaltungen, Schall, Vögel, Eis)...")
         res_stroem = chain_stroem.invoke({"context": context_window_stroem})
         json_stroem = parse_llm_json(res_stroem)
         if not json_stroem: json_stroem = {"4_Stroem": []}
@@ -820,7 +822,7 @@ def extract_all_data(text):
         if "3_Flaechen" not in json_main: json_main["3_Flaechen"] = {}
         json_main["3_Flaechen"].update(json_areas)
         
-        # Ström als Liste in die Logik übergeben
+        # Strom als Liste in die Logik übergeben
         stroem_liste = json_stroem.get("4_Stroem", [])
         
         # Post Processing und Zusammenbau pro Anlage
@@ -993,7 +995,7 @@ def main():
                                 
                         # --- Spalte 2: Flächen & Abstände ---
                         with c2:
-                            st.subheader("FlächenDaten")
+                            st.subheader("Flächen-Daten")
                             flaeche_clean = {k: v for k, v in flaeche.items() if v and str(v).strip() != ""}
                             if flaeche_clean:
                                 flaeche_df = pd.DataFrame(list(flaeche_clean.items()), columns=["Eigenschaft", "Wert"])
@@ -1001,9 +1003,9 @@ def main():
                             else:
                                 st.info("Keine Flächen- oder Abstandsangaben gefunden.")
                                 
-                        # --- Spalte 3: Ström & Abschaltungen ---
+                        # --- Spalte 3: Strom & Abschaltungen ---
                         with c3:
-                            st.subheader("strömDaten")
+                            st.subheader("Strom-Daten")
                             stroem_clean = {k: v for k, v in stroem.items() if v and str(v).strip() != ""}
                             if stroem_clean:
                                 stroem_df = pd.DataFrame(list(stroem_clean.items()), columns=["Regel", "Wert"])
