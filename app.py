@@ -283,7 +283,7 @@ def extract_all_data(text):
 
     -------------------------------------------------------
     TEIL 1: METADATA ALLGEMEIN
-
+    - "Titel Genehmigungsbescheid": Suche ganz am Anfang des bereitgestellten Textes nach der Markierung "--- DOKUMENT START: ... ---". Extrahiere exakt den dort genannten Dateinamen des PDFs (z.B. "1048_Genehmigungs_Cheine_03-2024.pdf" oder "124_Genehmigung_Klein_Dammerow_6WEA_05-2024.pdf") und trage ihn hier ein. Erfinde keinen eigenen Titel!
     - "Aktenzeichen (Az)": NUR die reine Kennzeichnung (Ignoriere "Az.").
     - "Genehmigungsdatum": Datum der Entscheidung.
     - "Antragsdatum": Nur Datum nach „Antrag vom“ oder „eingegangen am“.
