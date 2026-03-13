@@ -925,6 +925,7 @@ def main():
                             "<script>window.parent.location.reload();</script>",
                             height=0, width=0
                         )
+                        st.stop()
                     elif admin_password_input:
                         st.error("❌ Falsches Passwort!")
 
