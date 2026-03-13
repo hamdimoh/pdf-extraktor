@@ -46,10 +46,13 @@ def read_pdfs_tesseract(files):
     full_text = ""
     progress_bar = st.progress(0)
     status_text = st.empty()
+    timer_text = st.empty()  # Live-Zeitanzeige
     total_files = len(files)
+    ocr_total_start = time.time()
+    all_durations = []  # Zeiten jeder Datei sammeln
 
     for i, f in enumerate(files):
-        start_time = time.time()
+        file_start_time = time.time()
         status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Analysiere PDF-Struktur)...")
         
         pdf_bytes = f.getvalue()
@@ -66,7 +69,9 @@ def read_pdfs_tesseract(files):
         
         # Schleife: Immer nur EINE Seite in den Speicher laden
         for page_num in range(1, total_pages + 1):
+            elapsed_page = round(time.time() - file_start_time, 0)
             status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Scanne Seite {page_num} von {total_pages})...")
+            timer_text.caption(f"⏱ Verstrichene Zeit für diese Datei: {int(elapsed_page)} Sek.")
             
             # dpi 150 ist optimal: Spart 40% RAM gegenüber 200 dpi, aber Tesseract liest es trotzdem fehlerfrei
             images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
@@ -86,12 +91,22 @@ def read_pdfs_tesseract(files):
             
         full_text += f"\n\n--- DOKUMENT START: {f.name} ---\n{doc_text}\n--- DOKUMENT ENDE ---\n"
         
-        duration = round(time.time() - start_time, 1)
-        status_text.success(f"⚡ {f.name} fertig in {duration} Sekunden!")
+        file_duration = round(time.time() - file_start_time, 1)
+        all_durations.append(file_duration)
+        status_text.success(f"⚡ {f.name} fertig in {file_duration} Sek.!")
+        timer_text.empty()
         progress_bar.progress((i + 1) / total_files)
 
+    # --- OCR Gesamtzeit Zusammenfassung ---
+    ocr_total_sec = round(time.time() - ocr_total_start, 1)
+    ocr_total_min = round(ocr_total_sec / 60, 2)
+    avg_per_file = round(sum(all_durations) / len(all_durations), 1) if all_durations else 0
+
     status_text.empty()
+    timer_text.empty()
     progress_bar.empty()
+    
+    st.success(f"✅ OCR abgeschlossen! Gesamtdauer: **{ocr_total_sec} Sek. ({ocr_total_min} Min.)** | Ø pro Datei: **{avg_per_file} Sek.**")
     return full_text
 
 # ---------------- HELPER: KOORDINATEN UMRECHNEN (DMS -> UTM) ----------------
@@ -252,7 +267,7 @@ def extract_all_data(text):
 
     # --- KONTEXT FÜR CALL 3 (Strom / ABSCHALTUNGEN) ---
     context_window_stroem = ""
-    stroem_matches = [m.start() for m in re.finditer(r'(?i)abschalt|betrieb|schall|fledermaus|vogel|milan|mahd|ernte|pflug|eisansatz|eiserkennung|schatten|radar|antikollision|kamera|identiflight|monitoring|nacht|lärm|rotorblattheizung|flight\s*manager|immission', text)]
+    stroem_matches = [m.start() for m in re.finditer(r'(?i)abschalt|betrieb|schall|fledermaus|vogel|milan|mahd|ernte|pflug|eisansatz|eiserkennung|schatten|radar|antikollision|kamera|identiflight|monitoring|nacht|lärm|rotorblattheizung|flight\s*manager|immission|ersatzgeld|landschaftsbild|ausgleich|artenschutzzahlung|bürgschaft|rückbau|geräusch|db\(a\)', text)]
     
     last_added_idx = -10000
     filtered_stroem = []
@@ -600,168 +615,106 @@ def extract_all_data(text):
     # PROMPT 3: Strom (ABSCHALTUNGEN)
     # ==========================================
     template_stroem = """
-    DU BIST EIN DATEN-EXTRAKTOR. EXTRAHIERE ALLE BETRIEBSABSCHALTUNGEN UND REGULATIONEN FÜR JEDE WINDKRAFTANLAGE (WEA).
+    DU BIST EIN HOCHPRÄZISER DATEN-ANALYST FÜR GENEHMIGUNGSBESCHEIDE.
+    DEINE AUFGABE IST ES, ALLE BETRIEBSAUFLAGEN, ABSCHALTUNGEN UND TECHNISCHEN PARAMETER FÜR JEDE WINDKRAFTANLAGE (WEA) IN EIN KLARES FORMAT ZU ÜBERFÜHREN.
     GIB GENAU EIN GÜLTIGES JSON-OBJEKT ZURÜCK, DAS EIN ARRAY "4_Stroem" ENTHÄLT. FÜR JEDE WEA GIBT ES EIN EIGENES OBJEKT IM ARRAY.
 
     WICHTIGE GRUNDREGELN:
-    1. Trage bei (Ja/Nein)-Feldern "Ja" oder "Nein" ein. Wenn nichts erwähnt wird, trage "" ein.
+    1. Trage bei (Ja/Nein)-Feldern exakt "Ja" oder "Nein" ein. Wenn nichts erwähnt wird, schreibe "".
     2. Wenn ein Wert (Datum, Temperatur, Art) nicht im Text steht, schreibe "".
-    3. Wenn Abschaltungen für "alle Anlagen" gelten, kopiere diese Werte bei jeder einzelnen WEA in das Array.
+    3. Keine erfundenen "Hilfsspalten" oder interne Notizen. Nur die vorgegebenen JSON-Schlüssel verwenden!
+    4. Wenn Abschaltungen für "alle Anlagen" gelten, kopiere diese Werte bei jeder einzelnen WEA in das Array.
+    5. TAGESZEITEN: Extrahiere Tageszeiten exakt wie im Text (z.B. "1 Stunde vor Sonnenuntergang bis Sonnenaufgang"). Kürze diese niemals!
 
     -------------------------------------------------------
     EXTRAKTIONSREGELN (SEHR WICHTIG)
 
-    A) FLEDERMAUS-ABSCHALTUNG
-    Suche nach:
-    - Fledermaus
-    - Abschaltalgorithmus
-    - Abschaltung Fledermäuse
+    A) ARTENSCHUTZ: ABSCHALT-TYPEN (VÖGEL)
+    Prüfe, welche grundsätzlichen Systeme gefordert werden und trage "Ja" ein:
+    - Automatisches Antikollisisonssystem (AKS) Vögel
+    - Manuelle / Phänologische Abschaltung Vögel (z.B. feste Kalenderzeiten)
+    - Landwirtschaftliche Betriebsabschaltung Vögel (Summe) (Sobald Mahd, Pflug oder Ernte genannt wird = "Ja")
+    - Abschaltung Mahd / Abschaltung Pflug / Abschaltung Ernte (jeweils "Ja", wenn explizit gefordert)
+    - Abgeschalteter Bewirtschaftsungsraum: Trage hier nur die Meter-Zahl ein (z.B. "300"). Achte darauf, ob ab "Mast" oder ab "Rotor" gemessen wird und trage es in das entsprechende Feld ein.
 
-    Extrahiere:
-    - Zeitraum
-    - Windgeschwindigkeit
-    - Temperatur
-    - Tageszeit (Beachte zwingend Regel G!)
+    B) ARTENSCHUTZ: FLEDERMÄUSE (FM)
+    - Fledermausart (FM): Wenn spezifische Arten genannt sind.
+    - Zeiten, Wind, Temperatur, Niederschlag, Tageszeiten: Exakt aus dem Abschaltalgorithmus übernehmen.
+    - Monitoring: Wird ein Fledermausmonitoring (Gondelmonitoring, Höhenmonitoring) gefordert? -> "Fledermausmonitoring (Ja, Nein)": "Ja".
+    - Gibt es eine vorläufige Abschaltung, bis das Monitoring abgeschlossen ist? -> "Vorläufige Abschaltung Fledermausmonitoring (Ja, Nein)": "Ja".
 
-    -------------------------------------------------------
-    B) VOGEL-ABSCHALTUNG & VOGELARTEN
-    Suche nach:
-    - Vogelschutz
-    - Antikollisionssystem
-    - phänologische Abschaltung
-    - landwirtschaftliche Abschaltung
+    C) ARTENSCHUTZ: VÖGEL (WICHTIGSTE REGEL ZUR TRENNUNG)
+    Wenn für verschiedene Vogelarten UNTERSCHIEDLICHE Auflagen oder Zeiträume gelten, DARFST DU DIESE NIEMALS VERMISCHEN! 
+    Nutze für jede Vogelart einen eigenen Block:
+    - Vogelart 1 (V1): z.B. Rotmilan -> Trage hierzu exakt die passenden V1-Zeiträume, Windgeschwindigkeiten etc. ein.
+    - Vogelart 2 (V2): z.B. Baumfalke -> Trage hierzu exakt die passenden V2-Zeiträume ein.
+    - Vogelart 3 (V3): Für weitere Arten.
 
-    REGEL FÜR VOGELARTEN:
-    Wenn eine Vogelart im selben Absatz wie eine Abschaltung, ein Bewirtschaftungsradius oder eine landwirtschaftliche Abschaltung genannt wird, extrahiere die Vogelart.
-    
-    Typische Arten:
-    Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
+    Typische Arten: Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
 
-    Beispiel:
-    "Zum Schutz des Weißstorchs ist ein Bewirtschaftungsradius von 150 m um die WEA einzuhalten."
-    → Ausgabe: "Vogelart (V)": "Weißstorch"
+    D) BAUZEITENREGELUNGEN
+    - Baufeldräumung (Ja, Nein)
+    - Baufeldräumung (Zeiten): z.B. "außerhalb der Brutzeit", "01.10.-28.02."
 
-    Extrahiere zusätzlich:
-    - Zeitraum
-    - Windgeschwindigkeit
-    - Niederschlag
-    - Tageszeiten (Beachte zwingend Regel G!)
+    E) SCHALL, SCHATTEN & BETRIEB (TECHNIK)
+    - Schall-Betriebsregulation (Ja, Nein): Gibt es einen reduzierten Modus (SO-Modus)? -> "Ja".
+    - Betriebsmodus nachts (Bezeichnung): Trage den Modus exakt ein (z.B. "Mode NO 106.0", "SO5").
+    - SONDERFALL: Wenn eine Anlage nachts komplett abgestellt werden muss, trage "Außerbetriebsetzung" in den Betriebsmodus nachts ein. Prüfe dies für jede Anlage (insbesondere WEA 01) einzeln!
+    - Geräuschpegelgrenzen (dB): Nur die reinen Zahlen tags und nachts.
+    - Eiswurf-Abschaltung (Ja/Nein): "Ja", wenn Eiserkennungssystem vorhanden.
+    - Schattenwurf-Abschaltung: "Ja" bei Summe, astronomisch oder meteorologisch, je nach Erwähnung (meist 30 Min/Tag, 8 Std/Jahr = astronomisch).
+    - Abschaltung Turbulenzen (Ja, Nein): "Ja" bei Sektorabschaltungen wegen Windverwirbelungen.
+    - Blattheizung (Ja/Nein)
 
-    -------------------------------------------------------
-    C) BEWIRTSCHAFTUNGSRAUM UM WEA
-    Suche nach Abständen oder Radien um eine Windenergieanlage.
-
-    Keywords:
-    - Bewirtschaftungsraum
-    - Bewirtschaftungsradius
-    - Radius um die WEA
-    - Umkreis um die WEA
-    - Abstand um die WEA
-    - Schutzradius
-
-    Wenn eine Zahl mit Einheit "m" im Zusammenhang mit der WEA steht, extrahiere diese Zahl.
-
-    Beispiele:
-    "im Umkreis von 250 m um die WEA"
-    "Bewirtschaftungsraum von 250 m"
-    "innerhalb eines Radius von 250 m um den Mast"
-
-    → Ausgabe:
-    "Abgeschalteter Bewirtschaftsungsraum um WEA ab Mast (m)": "250"
-
-    Regeln:
-    - Wenn "um den Mast", "um die WEA", "um den Turm" → Mast-Feld
-    - Wenn "um den Rotor" → Rotor-Feld
-
-    -------------------------------------------------------
-    D) BAUFELDRÄUMUNG
-    Suche nach:
-    - Baufeldräumung
-    - Rodung
-    - außerhalb der Brutzeit
-
-    Extrahiere Zeitraum.
-
-    -------------------------------------------------------
-    E) SCHATTENWURF-ABSCHALTUNG
-    Suche nach:
-    - Schattenwurf
-    - Schattenabschaltung
-    - Schattenwurfsystem
-    - Abschaltautomatik
-
-    Wenn eine automatische Abschaltung erwähnt wird → 
-    "Schattenwurf-Abschaltung Summe (Ja/Nein)" = "Ja"
-
-    Wenn Begriffe wie:
-    - astronomisch
-    - 30 Minuten pro Tag
-    - 30 Stunden pro Jahr
-    auftreten → 
-    "Schattenwurf-Abschaltung astronomisch (Ja/Nein)" = "Ja"
-
-    -------------------------------------------------------
-    F) SCHALL-BETRIEBSREGULATION
-    Suche nach:
-    - Nachtbetrieb
-    - Betriebsmodus
-    - Schallreduktion
-    - schallreduzierter Betrieb
-    - Betriebsmodus nachts
-
-    Wenn vorhanden → "Schall-Betriebsregulation (Ja/Nein)" = "Ja"
-
-    -------------------------------------------------------
-    G) TAGESZEITEN (SEHR WICHTIG)
-    Extrahiere die Tageszeiten exakt wie im Text.
-    Kürze oder vereinfache die Zeitspanne NICHT.
-
-    Wenn Formulierungen vorkommen wie:
-    - "1 Stunde vor Sonnenuntergang bis Sonnenaufgang"
-    - "30 Minuten vor Sonnenuntergang bis Sonnenaufgang"
-    - "2 Stunden nach Sonnenuntergang"
-    dann muss die Zeitspanne vollständig übernommen werden.
-
-    Beispiele:
-    Text: "1 Stunde vor Sonnenuntergang bis Sonnenaufgang"
-    → Ausgabe "FM - Tageszeiten": "1 Stunde vor Sonnenuntergang bis Sonnenaufgang"
+    F) LUFTVERKEHR
+    - Abschaltung durch Flight Manager (Radarabschaltung) (Ja/Nein): Wenn Bedarfsgesteuerte Nachtkennzeichnung (BNK) oder militärisches Radar zur Abschaltung führt.
 
     -------------------------------------------------------
     ERZWUNGENES OUTPUT-FORMAT (START MIT {{ UND ENDE MIT }}):
-
     {{
       "4_Stroem": [
         {{
           "Anlagen-Nr. / Kennzeichnung": "WEA 01",
-          "Automatisches Antikollisisonssystem (AKS) Vögel (Ja/Nein)": "",
-          "Manuelle / Phänologische Abschaltung Vögel (Ja/Nein)": "",
-          "Landwirtschaftliche Betriebsabschaltung Vögel (Summe) (Ja/Nein)": "",
-          "Abschaltung Mahd (Ja/Nein)": "",
-          "Abschaltung Pflug (Ja/Nein)": "",
-          "Abschaltung Ernte (Ja/Nein)": "",
+          "Automatisches Antikollisisonssystem (AKS) Vögel": "",
+          "Manuelle / Phänologische Abschaltung Vögel": "",
+          "Landwirtschaftliche Betriebsabschaltung Vögel (Summe)": "",
+          "Abschaltung Mahd": "",
+          "Abschaltung Pflug": "",
+          "Abschaltung Ernte": "",
           "Abgeschalteter Bewirtschaftsungsraum um WEA ab Mast (m)": "",
           "Abgeschalteter Bewirtschaftsungsraum um WEA ab Rotor (m)": "",
-          "Vogelart (V)": "",
-          "V - Zeiträume (Datum von-bis)": "",
-          "V - Windgeschwindigkeit (< m/s)": "",
-          "V - Niederschlag (Nd)": "",
-          "V - Tageszeiten": "",
           "Fledermausart (FM)": "",
           "FM - Zeiträume (Datum von-bis)": "",
           "FM - Windgeschwindigkeit (< m/s)": "",
           "FM - Temperatur (> °C)": "",
           "FM - Niederschlag (Nd)": "",
           "FM - Tageszeiten": "",
-          "Fledermausmonitoring (Ja/Nein)": "",
-          "Vorläufige Abschaltung Fledermausmonitoring (Ja/Nein)": "",
-          "Baufeldräumung (Ja/Nein)": "",
+          "Fledermausmonitoring (Ja, Nein)": "",
+          "Vorläufige Abschaltung Fledermausmonitoring (Ja, Nein)": "",
+          "Fledermausmonitoring (Zeiten)": "",
+          "Vogelart 1 (V1)": "",
+          "V1 - Zeiträume (Datum von-bis)": "",
+          "V1 - Windgeschwindigkeit (< m/s)": "",
+          "V1 - Niederschlag (Nd)": "",
+          "V1 - Tageszeiten": "",
+          "Vogelart 2 (V2)": "",
+          "V2 - Zeiträume (Datum von-bis)": "",
+          "V2 - Windgeschwindigkeit (< m/s)": "",
+          "V2 - Niederschlag (Nd)": "",
+          "V2 - Tageszeiten": "",
+          "Vogelart 3 (V3)": "",
+          "V3 - Zeiträume (Datum von-bis)": "",
+          "V3 - Windgeschwindigkeit (< m/s)": "",
+          "V3 - Niederschlag (Nd)": "",
+          "V3 - Tageszeiten": "",
+          "Baufeldräumung (Ja, Nein)": "",
           "Baufeldräumung (Zeiten)": "",
-          "Schall-Betriebsregulation (Ja/Nein)": "",
+          "Schall-Betriebsregulation (Ja, Nein)": "",
           "Schall-Betriebsregulation (Zeiten)": "",
-          "Schall-Abschaltung (Ja/Nein)": "",
+          "Schall-Abschaltung (Ja, Nein)": "",
           "Schall-Abschaltung (Zeiten)": "",
-          "Vorläufige Schall-Betriebsregulation bis Monitoring (Ja/Nein)": "",
-          "Vorläufige Schall-Betriebsabschaltung bis Monitoring (Ja/Nein)": "",
+          "Vorläufige Schall-Betriebsregulation bis Monitoring (Ja, Nein)": "",
+          "Vorläufige Schall-Betriebsabschaltung bis Monitoring (Ja, Nein)": "",
           "Geräuschpegelgrenzen (dB) tags/gesamt": "",
           "Geräuschpegelgrenzen (dB) nachts/gesamt": "",
           "Betriebsmodus tags (Bezeichnung)": "",
@@ -771,7 +724,7 @@ def extract_all_data(text):
           "Schattenwurf-Abschaltung Summe (Ja/Nein)": "",
           "Schattenwurf-Abschaltung astronomisch (Ja/Nein)": "",
           "Schattenwurf-Abschaltung meteorologisch (Ja/Nein)": "",
-          "Abschaltung Turbulenzen (Ja/Nein)": "",
+          "Abschaltung Turbulenzen (Ja, Nein)": "",
           "Abschaltung durch Flight Manager (Radarabschaltung) (Ja/Nein)": ""
         }}
       ]
@@ -783,7 +736,7 @@ def extract_all_data(text):
 
     
     # Modelle Setup
-    llm = ChatMistralAI(model="mistral-large-2411", temperature=0.0, timeout=300, max_retries=2)
+    llm = ChatMistralAI(model="mistral-large-2512", temperature=0.0, timeout=120, max_retries=1)
     
     chain_main = ChatPromptTemplate.from_template(template_main) | llm | StrOutputParser()
     chain_areas = ChatPromptTemplate.from_template(template_areas) | llm | StrOutputParser()
@@ -796,24 +749,48 @@ def extract_all_data(text):
             return json.loads(match.group(0))
         return None
 
+    # Schlaue Retry-Funktion: Wartet NUR bei echten Rate-Limit-Fehlern (429)
+    def invoke_with_retry(chain, inputs, max_attempts=2):
+        for attempt in range(max_attempts):
+            try:
+                return chain.invoke(inputs)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "429" in error_msg or "rate limit" in error_msg or "capacity exceeded" in error_msg:
+                    if attempt < max_attempts - 1:
+                        status_text.warning(f"⚠️ Rate Limit (429) erkannt. Warte 10 Sek. (Versuch {attempt+1}/{max_attempts})...")
+                        time.sleep(10)
+                        status_text.info("Versuche erneut...")
+                        continue
+                # Bei allen anderen Fehlern oder letztem Versuch: sofort abbrechen
+                raise e
+
+    ki_timer_text = st.empty()  # Live-Timer für KI-Extraktion
+    ki_total_start = time.time()
+
+    def update_ki_timer(label):
+        elapsed = round(time.time() - ki_total_start, 0)
+        ki_timer_text.caption(f"⏱ {label} — Verstrichene Zeit: {int(elapsed)} Sek.")
+
     try:
         # Phase 1
-        status_text.info("Phase 1/3: Extrahiere Metadaten & Technik...")
-        res_main = chain_main.invoke({"context": context_window_main})
+        status_text.info("Phase 1/3: Extrahiere Meta-Daten...")
+        update_ki_timer("Phase 1/3")
+        res_main = invoke_with_retry(chain_main, {"context": context_window_main})
         json_main = parse_llm_json(res_main)
         if not json_main: return {}
-        time.sleep(2)
 
         # Phase 2
-        status_text.info("Phase 2/3: Scharfschützen-Extraktion der Flächen...")
-        res_areas = chain_areas.invoke({"context": context_window_areas})
+        status_text.info("Phase 2/3: Extraktion der Flächen-Daten...")
+        update_ki_timer("Phase 2/3")
+        res_areas = invoke_with_retry(chain_areas, {"context": context_window_areas})
         json_areas = parse_llm_json(res_areas)
         if not json_areas: json_areas = {}
-        time.sleep(2)
 
         # Phase 3
-        status_text.info("Phase 3/3: Extrahiere Strom-Daten (Abschaltungen, Schall, Vögel, Eis)...")
-        res_stroem = chain_stroem.invoke({"context": context_window_stroem})
+        status_text.info("Phase 3/3: Extrahiere Strom-Daten...")
+        update_ki_timer("Phase 3/3")
+        res_stroem = invoke_with_retry(chain_stroem, {"context": context_window_stroem})
         json_stroem = parse_llm_json(res_stroem)
         if not json_stroem: json_stroem = {"4_Stroem": []}
 
@@ -829,10 +806,18 @@ def extract_all_data(text):
         final_data = post_process_coordinates(json_main)
         final_data = restructure_and_calculate_data(final_data, stroem_liste)
         
-        status_text.success("Extraktion erfolgreich in 3 Phasen abgeschlossen!")
+        # --- KI Gesamtzeit Zusammenfassung ---
+        ki_total_sec = round(time.time() - ki_total_start, 1)
+        ki_total_min = round(ki_total_sec / 60, 2)
+        ki_avg_phase = round(ki_total_sec / 3, 1)
+        
+        ki_timer_text.empty()
+        status_text.empty()
+        st.success(f"✅ KI-Extraktion abgeschlossen! Gesamtdauer: **{ki_total_sec} Sek. ({ki_total_min} Min.)** | Ø pro Phase: **{ki_avg_phase} Sek.**")
         return final_data
         
     except Exception as e:
+        ki_timer_text.empty()
         error_msg = str(e).lower()
         if "429" in error_msg or "rate limit" in error_msg or "timeout" in error_msg:
             st.error(f"⏳ API ist ausgelastet oder Limit erreicht. Detail-Fehler: {e}")
