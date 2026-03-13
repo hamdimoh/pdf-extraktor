@@ -301,8 +301,8 @@ def extract_all_data(text):
     - Rückbaukosten / Bürgschaft (€): Nur wenn ausdrücklich als Sicherheitsleistung / Bürgschaft genannt.
 
     RÜCKBAU VON ALTANLAGEN:
-- "Rückbau von Altanlagen (Ja/Nein)": Trage "Ja" ein, wenn im Text erwähnt wird, dass bestehende Anlagen/Altanlagen abgebaut, zurückgebaut oder demontiert werden (oft im Kontext von Repowering). Andernfalls trage "Nein" oder "" ein.
-- "Bezeichnung abgebauter Altanlagen": Wenn Altanlagen zurückgebaut werden, extrahiere hier EXAKT die Kennzeichnungen oder Namen dieser alten Anlagen (z.B. "Altanlage WEA01, WEA03"). Wenn keine spezifischen Namen genannt werden, schreibe "".
+    - "Rückbau von Altanlagen (Ja/Nein)": Trage "Ja" ein, wenn im Text erwähnt wird, dass bestehende Anlagen/Altanlagen abgebaut, zurückgebaut oder demontiert werden (oft im Kontext von Repowering). Andernfalls trage "Nein" oder "" ein.
+    - "Bezeichnung abgebauter Altanlagen": Wenn Altanlagen zurückgebaut werden, extrahiere hier EXAKT die Kennzeichnungen oder Namen dieser alten Anlagen (z.B. "Altanlage WEA01, WEA03"). Wenn keine spezifischen Namen genannt werden, schreibe "".
 
     -------------------------------------------------------
     TEIL 2: WEA-STECKBRIEFE
@@ -635,7 +635,7 @@ def extract_all_data(text):
     Wenn eine Vogelart im selben Absatz wie eine Abschaltung, ein Bewirtschaftungsradius oder eine landwirtschaftliche Abschaltung genannt wird, extrahiere die Vogelart.
     
     Typische Arten:
-Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
+    Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
 
     Beispiel:
     "Zum Schutz des Weißstorchs ist ein Bewirtschaftungsradius von 150 m um die WEA einzuhalten."
