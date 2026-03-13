@@ -865,6 +865,40 @@ def main():
             
             st.session_state.full_result = extract_all_data(st.session_state.extracted_text)
 
+        st.write("---")
+        st.header("4. System")
+        with st.expander("Admin: App neu starten"):
+            admin_password_input = st.text_input("Admin-Passwort", type="password")
+            if st.button("App neu starten", type="primary"):
+                # Versuch, Passwort aus st.secrets oder .env zu laden
+                correct_password = os.getenv("ADMIN_PASSWORD")
+                try:
+                    if "ADMIN_PASSWORD" in st.secrets:
+                        correct_password = st.secrets["ADMIN_PASSWORD"]
+                except Exception:
+                    pass
+                
+                if not correct_password:
+                    st.error("⚠️ Kein Admin-Passwort im System konfiguriert (ADMIN_PASSWORD).")
+                elif admin_password_input == correct_password:
+                    st.success("Passwort korrekt. App wird zurückgesetzt...")
+                    
+                    # App Cache leeren und Session State zurücksetzen
+                    st.cache_data.clear()
+                    try:
+                        st.cache_resource.clear()
+                    except AttributeError:
+                        pass
+                    st.session_state.clear()
+                    
+                    # Streamlit Rerun ausführen (je nach Streamlit-Version)
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+                elif admin_password_input:
+                    st.error("❌ Falsches Passwort!")
+
     # --- ANZEIGE ---
     tab1, tab2 = st.tabs(["Ergebnis Dashboard", "Extrahierter Text (Tesseract)"])
     
