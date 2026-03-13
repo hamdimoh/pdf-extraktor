@@ -24,7 +24,7 @@ from langchain_mistralai import ChatMistralAI
 from pyproj import Transformer
 
 # ---------------- CONFIG & API KEY SICHERN ----------------
-load_dotenv()
+load_dotenv(override=True)
 
 # Sicherer Check für MISTRAL_API_KEY (verhindert Absturz auf dem Mac)
 mistral_key = os.getenv("MISTRAL_API_KEY")
@@ -866,38 +866,65 @@ def main():
             st.session_state.full_result = extract_all_data(st.session_state.extracted_text)
 
         st.write("---")
-        st.header("4. System")
-        with st.expander("Admin: App neu starten"):
-            admin_password_input = st.text_input("Admin-Passwort", type="password")
-            if st.button("App neu starten", type="primary"):
-                # Versuch, Passwort aus st.secrets oder .env zu laden
-                correct_password = os.getenv("ADMIN_PASSWORD")
-                try:
-                    if "ADMIN_PASSWORD" in st.secrets:
-                        correct_password = st.secrets["ADMIN_PASSWORD"]
-                except Exception:
-                    pass
+        
+        # --- 4. ADMINISTRATIVER BEREICH (SIDEBAR) ---
+        with st.sidebar:
+            st.divider()
+            st.markdown(" System Administration")
+            
+            # Button, um das Passwortfeld anzuzeigen/auszublenden
+            if "show_admin" not in st.session_state:
+                st.session_state.show_admin = False
                 
-                if not correct_password:
-                    st.error("⚠️ Kein Admin-Passwort im System konfiguriert (ADMIN_PASSWORD).")
-                elif admin_password_input == correct_password:
-                    st.success("Passwort korrekt. App wird zurückgesetzt...")
-                    
-                    # App Cache leeren und Session State zurücksetzen
-                    st.cache_data.clear()
+            if st.button("🔄 App neu starten" if not st.session_state.show_admin else "Abbrechen", use_container_width=True):
+                st.session_state.show_admin = not st.session_state.show_admin
+                st.rerun()
+                
+            if st.session_state.show_admin:
+                admin_password_input = st.text_input("Admin-Passwort", type="password", key="admin_pw_input")
+                
+                if st.button("Reset ausführen", type="primary", use_container_width=True):
+                    # Versuch, Passwort aus st.secrets oder .env zu laden
+                    correct_password = os.getenv("ADMIN_PASSWORD")
                     try:
-                        st.cache_resource.clear()
-                    except AttributeError:
+                        if "ADMIN_PASSWORD" in st.secrets:
+                            correct_password = st.secrets["ADMIN_PASSWORD"]
+                    except Exception:
                         pass
-                    st.session_state.clear()
                     
-                    # Streamlit Rerun ausführen (je nach Streamlit-Version)
-                    try:
-                        st.rerun()
-                    except AttributeError:
-                        st.experimental_rerun()
-                elif admin_password_input:
-                    st.error("❌ Falsches Passwort!")
+                    if not correct_password:
+                        st.error("⚠️ Kein Admin-Passwort im System konfiguriert (ADMIN_PASSWORD).")
+                    elif admin_password_input == correct_password:
+                        st.success("Passwort korrekt. System führt einen Hard-Reset durch...")
+                        
+                        # 1. Alle Caches leeren
+                        st.cache_data.clear()
+                        try:
+                            st.cache_resource.clear()
+                        except AttributeError:
+                            pass
+                        
+                        # 2. Kompletten Session State restlos löschen
+                        for key in list(st.session_state.keys()):
+                            del st.session_state[key]
+                            
+                        # 3. Dem User Zeit geben, die Meldung zu lesen (1.5s)
+                        time.sleep(1.5)
+                        
+                        # 4. Server (Streamlit Cloud Backend) hart neu starten lassen
+                        try:
+                            os.utime(__file__, None)
+                        except Exception:
+                            pass
+                            
+                        # 5. Frontend (Browser) per JavaScript zum echten Neuladen zwingen
+                        import streamlit.components.v1 as components
+                        components.html(
+                            "<script>window.parent.location.reload();</script>",
+                            height=0, width=0
+                        )
+                    elif admin_password_input:
+                        st.error("❌ Falsches Passwort!")
 
     # --- ANZEIGE ---
     tab1, tab2 = st.tabs(["Ergebnis Dashboard", "Extrahierter Text (Tesseract)"])
