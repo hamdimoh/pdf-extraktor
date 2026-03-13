@@ -893,9 +893,9 @@ def main():
                         pass
                     
                     if not correct_password:
-                        st.error("⚠️ Kein Admin-Passwort im System konfiguriert (ADMIN_PASSWORD).")
+                        st.error("⚠️ Kein Admin-Passwort.")
                     elif admin_password_input == correct_password:
-                        st.success("Passwort korrekt. System führt einen Hard-Reset durch...")
+                        st.success("System führt einen Reset durch...")
                         
                         # 1. Alle Caches leeren
                         st.cache_data.clear()
