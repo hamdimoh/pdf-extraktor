@@ -736,7 +736,7 @@ def extract_all_data(text):
 
     
     # Modelle Setup
-    llm = ChatMistralAI(model="mistral-large-2512", temperature=0.0, timeout=120, max_retries=1)
+    llm = ChatMistralAI(model="mistral-large-2512", temperature=0.0, timeout=300, max_retries=1)
     
     chain_main = ChatPromptTemplate.from_template(template_main) | llm | StrOutputParser()
     chain_areas = ChatPromptTemplate.from_template(template_areas) | llm | StrOutputParser()
@@ -773,26 +773,57 @@ def extract_all_data(text):
         ki_timer_text.caption(f"⏱ {label} — Verstrichene Zeit: {int(elapsed)} Sek.")
 
     try:
-        # Phase 1
-        status_text.info("Phase 1/3: Extrahiere Meta-Daten...")
-        update_ki_timer("Phase 1/3")
-        res_main = invoke_with_retry(chain_main, {"context": context_window_main})
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        status_text.info("⚡ Alle 3 Phasen werden parallel gestartet (mistral-large)...")
+        update_ki_timer("Parallel Phase 1+2+3")
+
+        # Reine API-Calls in Threads – KEIN Streamlit-Aufruf in den Threads!
+        # Retry-Logik direkt im Thread (thread-sicher: nur print(), kein st.warning())
+        def call_api(name, chain, ctx, max_retries=4, base_delay=10):
+            for attempt in range(max_retries):
+                try:
+                    result = chain.invoke({"context": ctx})
+                    return name, result
+                except Exception as e:
+                    err = str(e).lower()
+                    if ("429" in err or "rate limit" in err or "capacity exceeded" in err) and attempt < max_retries - 1:
+                        wait = base_delay * (2 ** attempt)  # 10s, 20s, 40s, 80s
+                        print(f"[{name}] Rate-Limit – warte {wait}s (Versuch {attempt+1}/{max_retries})")
+                        time.sleep(wait)
+                    else:
+                        raise e
+
+        results = {}
+        errors  = {}
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(call_api, "main",   chain_main,   context_window_main):   "main",
+                executor.submit(call_api, "areas",  chain_areas,  context_window_areas):  "areas",
+                executor.submit(call_api, "stroem", chain_stroem, context_window_stroem): "stroem",
+            }
+            done_count = 0
+            for future in as_completed(futures):
+                try:
+                    name, result = future.result()
+                    results[name] = result
+                    done_count += 1
+                    # Nur im Hauptthread updaten!
+                    status_text.info(f"✅ {done_count}/3 Phasen fertig...")
+                except Exception as exc:
+                    errors[futures[future]] = exc
+
+        if errors:
+            raise list(errors.values())[0]
+
+        res_main   = results.get("main", "")
+        res_areas  = results.get("areas", "")
+        res_stroem = results.get("stroem", "")
+
         json_main = parse_llm_json(res_main)
         if not json_main: return {}
-
-        # Phase 2
-        status_text.info("Phase 2/3: Extraktion der Flächen-Daten...")
-        update_ki_timer("Phase 2/3")
-        res_areas = invoke_with_retry(chain_areas, {"context": context_window_areas})
-        json_areas = parse_llm_json(res_areas)
-        if not json_areas: json_areas = {}
-
-        # Phase 3
-        status_text.info("Phase 3/3: Extrahiere Strom-Daten...")
-        update_ki_timer("Phase 3/3")
-        res_stroem = invoke_with_retry(chain_stroem, {"context": context_window_stroem})
-        json_stroem = parse_llm_json(res_stroem)
-        if not json_stroem: json_stroem = {"4_Stroem": []}
+        json_areas  = parse_llm_json(res_areas)  or {}
+        json_stroem = parse_llm_json(res_stroem) or {"4_Stroem": []}
 
         # Daten zusammenführen
         status_text.info("Führe Daten zusammen und bereite Tabellen vor...")
