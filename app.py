@@ -744,9 +744,33 @@ def extract_all_data(text):
     
     def parse_llm_json(res_str):
         clean_str = res_str.replace("```json", "").replace("```", "").strip()
-        match = re.search(r"\{.*\}", clean_str, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
+        # Finde den ersten '{' und extrahiere genau das erste vollständige JSON-Objekt
+        # per Klammer-Zählung – ignoriert jeglichen Text nach dem JSON (vermeidet "Extra data")
+        start = clean_str.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, ch in enumerate(clean_str[start:], start=start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            if not in_string:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(clean_str[start:i+1])
+                        except json.JSONDecodeError:
+                            return None
         return None
 
     # Schlaue Retry-Funktion: Wartet NUR bei echten Rate-Limit-Fehlern (429)
