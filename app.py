@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 import gc
 from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 import pytesseract
+import fitz
+import io
+import base64
 
 # --- IMPORTS FÜR KI-EXTRAKTION ---
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,7 +29,6 @@ from pyproj import Transformer
 # ---------------- CONFIG & API KEY SICHERN ----------------
 load_dotenv(override=True)
 
-# Sicherer Check für MISTRAL_API_KEY (verhindert Absturz auf dem Mac)
 mistral_key = os.getenv("MISTRAL_API_KEY")
 
 try:
@@ -41,15 +43,136 @@ else:
     st.error("⚠️ MISTRAL_API_KEY fehlt in den Secrets oder der .env Datei!")
     st.stop()
 
-# ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) - RAM SCHONEND ----------------
+# ---------------- HELPER: DATEINAMEN PARSEN ----------------
+def parse_filename_metadata(filename):
+    base = os.path.splitext(filename)[0]
+    
+    meta = {
+        "Typ": "Genehmigung",
+        "Aktenzeichen (Az)": "",
+        "Anlagenanzahl": "",
+        "Gemarkung": "",
+        "Monat": "",
+        "Jahr": "",
+        "Original_Dateiname": filename
+    }
+    
+    date_match = re.search(r'(\d{2})[-_](\d{4})', base)
+    if date_match:
+        meta["Monat"] = date_match.group(1)
+        meta["Jahr"] = date_match.group(2)
+        base = base.replace(date_match.group(0), "")
+        
+    anzahl_match = re.search(r'_(\d+)\s*(?:WEA)?_', base + "_", re.IGNORECASE)
+    if anzahl_match:
+        meta["Anlagenanzahl"] = anzahl_match.group(1)
+        base = re.sub(r'_' + re.escape(anzahl_match.group(1)) + r'(?:\s*WEA)?_', '_', base + "_", flags=re.IGNORECASE)
+        base = base[:-1] 
+        
+    parts = [p for p in base.split('_') if p.strip()]
+    
+    gemarkung_parts = []
+    for p in parts:
+        if "genehmig" in p.lower() or "bescheid" in p.lower():
+            meta["Typ"] = p
+        elif re.match(r'^[\d\-]+[a-zA-Z]?$', p): 
+            meta["Aktenzeichen (Az)"] = p
+        elif p.upper() != p and len(p) > 2: 
+            gemarkung_parts.append(p)
+
+    if gemarkung_parts:
+        meta["Gemarkung"] = "_".join(gemarkung_parts)
+    
+    if not meta["Aktenzeichen (Az)"] and parts:
+         if any(c.isdigit() for c in parts[0]):
+             meta["Aktenzeichen (Az)"] = parts[0]
+         elif len(parts) > 1 and any(c.isdigit() for c in parts[1]):
+             meta["Aktenzeichen (Az)"] = parts[1]
+
+    if not meta["Aktenzeichen (Az)"] and not meta["Gemarkung"]:
+        raise ValueError(f"Strikte Validierung fehlgeschlagen: Konnte weder Aktenzeichen noch Gemarkung im Dateinamen identifizieren: {filename}")
+        
+    return meta
+
+
+# --- NEUE DSGVO SCHWÄRZUNGS-FUNKTION (NUR ERSTE 5 SEITEN & NUR REGEX) ---
+def redact_pdf_dsgvo(input_pdf_bytes):
+    doc = fitz.open(stream=input_pdf_bytes, filetype="pdf")
+    
+    # --- 1. DATEN-RETTUNG (AKTENZEICHEN VOR DER ZERSTÖRUNG AUSLESEN) ---
+    extracted_az = ""
+    az_pattern = re.compile(r"(?i)(?:Aktenzeichen|Geschäftszeichen|Az\.|Dokument\s*Nr\.?|Zeichen)[\s:]+([A-Za-z0-9\-\./]+)")
+    
+    for i in range(min(5, len(doc))):  # Nur die ersten 5 Seiten prüfen
+        page_text = doc[i].get_text("text")
+        az_match = az_pattern.search(page_text)
+        if az_match:
+            extracted_az = az_match.group(1).strip()
+            break
+
+    # --- 2. STRENG LIMITIERTE REGEX-MUSTER (Nur Personen, Firmen, Kontakt & Firmen-Adressen) ---
+    patterns = [
+        # 1. Personen (inklusive Herr, Frau, Bearbeiter)
+        re.compile(r"(?i)\b(?:Bearbeiter(?:/in)?|Ansprechpartner|Herrn?|Frau)\b[\s:]+(?:Dr\.\s+|Prof\.\s+|Dipl\.-Ing\.\s+)?(?:[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+){0,2})"),
+        
+        # 2. Firmen (GmbH, KG, AG etc.)
+        re.compile(r"(?i)(?:Antragsteller(?:in)?[:\s]*)?(?:[A-ZÄÖÜ0-9][a-zA-Z0-9ÄÖÜäöüß\-\.&]*(?:\s+[a-zA-Z0-9ÄÖÜäöüß\-\.&]+){0,7}\s*)(?:GmbH|GbR|AG|OHG)(?:\s*&\s*Co\.?)?(?:\s+[a-zA-Z0-9ÄÖÜäöüß\-\.&]+){0,6}(?:\s*KG)?"),
+        
+        # 3. Kontaktdaten (Telefon, Fax, E-Mail, Hausruf)
+        re.compile(r"(?i)\b(?:Telefon|Tel\.|Hausruf|Telefax|Fax|E-Mail|Mail)[\s:]+[+0-9a-zA-Z\.\-\/@]+(?:\s+[0-9a-zA-Z\.\-\/@]+){0,2}"),
+        
+        # 4. Vertretung (Geschäftsführer etc.)
+        re.compile(r"(?i)\bvertreten\s+durch\s+(?:[a-zA-ZÄÖÜäöüß\-\.]+(?:\s+[a-zA-ZÄÖÜäöüß\-\.]+){0,5})"),
+        
+        # 5. FIRMEN-ADRESSE (PLZ + Ort): Nur wenn Firma davor steht
+        re.compile(r"(?i)(?:GmbH|GbR|AG|OHG|KG|Antragsteller(?:in)?)[\s\S]{1,150}?(\b\d{5}\s+[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+(?:\s+[A-ZÄÖÜa-zA-ZÄÖÜäöüß\-]+)?\b)"),
+        
+        # 6. FIRMEN-STRASSE: Nur wenn Firma davor steht
+        re.compile(r"(?i)(?:GmbH|GbR|AG|OHG|KG|Antragsteller(?:in)?)[\s\S]{1,150}?(\b[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+\s*(?:str\.|straße|weg|platz|gasse|ring|allee)\s+\d+[a-z]?\b)")
+    ]
+    
+    # WICHTIG: Wir scannen AUSSCHLIESSLICH die ersten 5 Seiten (Index 0 bis 4)
+    for i in range(min(2, len(doc))):
+        page = doc[i]
+        text = page.get_text("text")
+        
+        needs_redaction = False
+            
+        # Gezielte Regex-Suche auf der Seite
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                
+                # Wenn eine Fang-Klammer da ist (bei Adresse), nimm nur den Inhalt der Klammer
+                clean_match = (match.group(1) if match.groups() else match.group(0)).strip().replace('\n', ' ')
+                clean_match = re.sub(r'\s+', ' ', clean_match).strip()
+                
+                if len(clean_match) > 4:
+                    try:
+                        bboxes = page.search_for(clean_match)
+                        for bbox in bboxes:
+                            page.add_redact_annot(bbox, fill=(0, 0, 0))
+                            needs_redaction = True
+                    except Exception:
+                        pass
+                        
+        if needs_redaction:
+            page.apply_redactions()
+            
+    redacted_pdf_bytes = doc.write(garbage=4, deflate=True, clean=True)
+    doc.close()
+    
+    return redacted_pdf_bytes, extracted_az
+
+
+# ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) ----------------
 def read_pdfs_tesseract(files):
     full_text = ""
     progress_bar = st.progress(0)
     status_text = st.empty()
-    timer_text = st.empty()  # Live-Zeitanzeige
+    timer_text = st.empty()
     total_files = len(files)
     ocr_total_start = time.time()
-    all_durations = []  # Zeiten jeder Datei sammeln
+    all_durations = []
 
     for i, f in enumerate(files):
         file_start_time = time.time()
@@ -58,7 +181,6 @@ def read_pdfs_tesseract(files):
         pdf_bytes = f.getvalue()
         
         try:
-            # Nur die Info abrufen, wie viele Seiten das PDF hat (spart extrem viel RAM)
             info = pdfinfo_from_bytes(pdf_bytes)
             total_pages = info["Pages"]
         except Exception as e:
@@ -66,14 +188,11 @@ def read_pdfs_tesseract(files):
             continue
             
         doc_text = ""
-        
-        # Schleife: Immer nur EINE Seite in den Speicher laden
         for page_num in range(1, total_pages + 1):
             elapsed_page = round(time.time() - file_start_time, 0)
             status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Scanne Seite {page_num} von {total_pages})...")
             timer_text.caption(f"⏱ Verstrichene Zeit für diese Datei: {int(elapsed_page)} Sek.")
             
-            # dpi 150 ist optimal: Spart 40% RAM gegenüber 200 dpi, aber Tesseract liest es trotzdem fehlerfrei
             images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
             img = images[0]
             
@@ -84,7 +203,6 @@ def read_pdfs_tesseract(files):
                 
             doc_text += f"\n\n--- SEITE {page_num} ---\n{text}\n"
             
-            # SPEICHER SOFORT LEEREN, BEVOR DIE NÄCHSTE SEITE GELADEN WIRD
             del img
             del images
             gc.collect() 
@@ -97,7 +215,6 @@ def read_pdfs_tesseract(files):
         timer_text.empty()
         progress_bar.progress((i + 1) / total_files)
 
-    # --- OCR Gesamtzeit Zusammenfassung ---
     ocr_total_sec = round(time.time() - ocr_total_start, 1)
     ocr_total_min = round(ocr_total_sec / 60, 2)
     avg_per_file = round(sum(all_durations) / len(all_durations), 1) if all_durations else 0
@@ -169,7 +286,6 @@ def restructure_and_calculate_data(data, stroem_list):
         meta_global = data.get("1_MetaData_Allgemein", {})
         flaechen_global = data.get("3_Flaechen", {})
         
-        # Mathe-Funktion zum Teilen der Flächen
         def divide_val(val_str, divisor):
             if not val_str or str(val_str).strip() == "": return ""
             v = str(val_str).strip()
@@ -204,7 +320,6 @@ def restructure_and_calculate_data(data, stroem_list):
             wea_flaechen["Fläche Kran ($m^2$)"] = divide_val(wea_flaechen.get("Fläche Kran ($m^2$)", ""), num_weas)
             wea_flaechen["Fläche Kran ($ha$)"] = divide_val(wea_flaechen.get("Fläche Kran ($ha$)", ""), num_weas)
             
-            # Ordne die Strom-Daten der richtigen WEA zu
             wea_stroem = {}
             for st_item in stroem_list:
                 if st_item.get("Anlagen-Nr. / Kennzeichnung") == wea_kennzeichnung:
@@ -229,10 +344,9 @@ def restructure_and_calculate_data(data, stroem_list):
     return data
 
 # ---------------- 2. EXTRAKTION (3-PHASEN ARCHITEKTUR) ----------------
-def extract_all_data(text):
+def extract_all_data(text, metadata_dict):
     status_text = st.empty()
     
-    # --- KONTEXT FÜR CALL 1 (ALLGEMEIN) ---
     context_window_main = text[:8000] + "\n\n... [TEXT ÜBERSPRUNGEN] ...\n\n"
 
     coord_matches = [m.start() for m in re.finditer(r'(?i)rechtswert|hochwert|utm-koordinaten', text)]
@@ -245,7 +359,6 @@ def extract_all_data(text):
 
     context_window_main += "\n\n... [ENDE DES DOKUMENTS] ...\n\n" + text[-4000:]
 
-    # --- KONTEXT FÜR CALL 2 (FLÄCHEN) ---
     context_window_areas = ""
     area_matches = [m.start() for m in re.finditer(r'(?i)fundament|aufstandsfläche|zuwegung|zufahrt|wegeausbau|kranstellfläche|montagefläche|waldumwandlung|versiegelung|inanspruchnahme|waldersatz|aufforstung', text)]
     
@@ -265,7 +378,6 @@ def extract_all_data(text):
     for idx in filtered_matches[-35:]:
         context_window_areas += text[max(0, idx - 1000):min(len(text), idx + 1000)] + "\n...\n"
 
-    # --- KONTEXT FÜR CALL 3 (Strom / ABSCHALTUNGEN) ---
     context_window_stroem = ""
     stroem_matches = [m.start() for m in re.finditer(r'(?i)abschalt|betrieb|schall|fledermaus|vogel|milan|mahd|ernte|pflug|eisansatz|eiserkennung|schatten|radar|antikollision|kamera|identiflight|monitoring|nacht|lärm|rotorblattheizung|flight\s*manager|immission|ersatzgeld|landschaftsbild|ausgleich|artenschutzzahlung|bürgschaft|rückbau|geräusch|db\(a\)', text)]
     
@@ -280,7 +392,7 @@ def extract_all_data(text):
         context_window_stroem += text[max(0, idx - 1000):min(len(text), idx + 1000)] + "\n...\n"
 
     # ==========================================
-    # PROMPT 1: ALLES AUSSER SPEZIFISCHE FLÄCHEN (VERIFIZIERT & PRÄZISE)
+    # PROMPT 1: ALLES AUSSER SPEZIFISCHE FLÄCHEN
     # ==========================================
     template_main = """
     DU BIST EIN GNADENLOSER DATEN-EXTRAKTOR FÜR GENEHMIGUNGSBESCHEIDE.
@@ -298,7 +410,7 @@ def extract_all_data(text):
 
     -------------------------------------------------------
     TEIL 1: METADATA ALLGEMEIN
-    - "Titel Genehmigungsbescheid": Suche ganz am Anfang des bereitgestellten Textes nach der Markierung "--- DOKUMENT START: ... ---". Extrahiere exakt den dort genannten Dateinamen des PDFs (z.B. "1048_Genehmigungs_Cheine_03-2024.pdf" oder "124_Genehmigung_Klein_Dammerow_6WEA_05-2024.pdf") und trage ihn hier ein. Erfinde keinen eigenen Titel!
+     - "Titel Genehmigungsbescheid": Suche ganz am Anfang des bereitgestellten Textes nach der Markierung "--- DOKUMENT START: ... ---". Extrahiere exakt den dort genannten Dateinamen des PDFs (z.B. "1048_Genehmigungs_Cheine_03-2024.pdf" oder "124_Genehmigung_Klein_Dammerow_6WEA_05-2024.pdf") und trage ihn hier ein. Erfinde keinen eigenen Titel!
     - "Aktenzeichen (Az)": NUR die reine Kennzeichnung (Ignoriere "Az.").
     - "Genehmigungsdatum": Datum der Entscheidung.
     - "Antragsdatum": Nur Datum nach „Antrag vom“ oder „eingegangen am“.
@@ -516,7 +628,7 @@ def extract_all_data(text):
     """
 
     # ==========================================
-    # PROMPT 2: FLÄCHEN (MAXIMAL OPTIMIERT - v3)
+    # PROMPT 2: FLÄCHEN
     # ==========================================
     template_areas = """
     FLÄCHEN-EXTRAKTION FÜR WINDENERGIEANLAGEN
@@ -650,8 +762,6 @@ def extract_all_data(text):
     - Vogelart 2 (V2): z.B. Baumfalke -> Trage hierzu exakt die passenden V2-Zeiträume ein.
     - Vogelart 3 (V3): Für weitere Arten.
 
-    Typische Arten: Weißstorch, Schwarzstorch, Rotmilan, Schwarzmilan, Schreiadler, Kranich, Wiesenweihe, Rohrweihe, Kornweihe, Grauammer, Mäusebussard, Wespenbussard, Bussardarten, Baumfalke, Greifvögel (allgemein & Milanarten), Großvögel, Brutvögel (allgemein), Kollisionsgefährdete Vogelarten.
-
     D) BAUZEITENREGELUNGEN
     - Baufeldräumung (Ja, Nein)
     - Baufeldräumung (Zeiten): z.B. "außerhalb der Brutzeit", "01.10.-28.02."
@@ -744,11 +854,8 @@ def extract_all_data(text):
     
     def parse_llm_json(res_str):
         clean_str = res_str.replace("```json", "").replace("```", "").strip()
-        # Finde den ersten '{' und extrahiere genau das erste vollständige JSON-Objekt
-        # per Klammer-Zählung – ignoriert jeglichen Text nach dem JSON (vermeidet "Extra data")
         start = clean_str.find("{")
-        if start == -1:
-            return None
+        if start == -1: return None
         depth = 0
         in_string = False
         escape_next = False
@@ -762,8 +869,7 @@ def extract_all_data(text):
             if ch == '"':
                 in_string = not in_string
             if not in_string:
-                if ch == "{":
-                    depth += 1
+                if ch == "{": depth += 1
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
@@ -773,7 +879,6 @@ def extract_all_data(text):
                             return None
         return None
 
-    # Schlaue Retry-Funktion: Wartet NUR bei echten Rate-Limit-Fehlern (429)
     def invoke_with_retry(chain, inputs, max_attempts=2):
         for attempt in range(max_attempts):
             try:
@@ -786,10 +891,9 @@ def extract_all_data(text):
                         time.sleep(10)
                         status_text.info("Versuche erneut...")
                         continue
-                # Bei allen anderen Fehlern oder letztem Versuch: sofort abbrechen
                 raise e
 
-    ki_timer_text = st.empty()  # Live-Timer für KI-Extraktion
+    ki_timer_text = st.empty()
     ki_total_start = time.time()
 
     def update_ki_timer(label):
@@ -802,8 +906,6 @@ def extract_all_data(text):
         status_text.info("⚡ Alle 3 Phasen werden parallel gestartet (mistral-large)...")
         update_ki_timer("Parallel Phase 1+2+3")
 
-        # Reine API-Calls in Threads – KEIN Streamlit-Aufruf in den Threads!
-        # Retry-Logik direkt im Thread (thread-sicher: nur print(), kein st.warning())
         def call_api(name, chain, ctx, max_retries=4, base_delay=10):
             for attempt in range(max_retries):
                 try:
@@ -812,7 +914,7 @@ def extract_all_data(text):
                 except Exception as e:
                     err = str(e).lower()
                     if ("429" in err or "rate limit" in err or "capacity exceeded" in err) and attempt < max_retries - 1:
-                        wait = base_delay * (2 ** attempt)  # 10s, 20s, 40s, 80s
+                        wait = base_delay * (2 ** attempt)
                         print(f"[{name}] Rate-Limit – warte {wait}s (Versuch {attempt+1}/{max_retries})")
                         time.sleep(wait)
                     else:
@@ -832,7 +934,6 @@ def extract_all_data(text):
                     name, result = future.result()
                     results[name] = result
                     done_count += 1
-                    # Nur im Hauptthread updaten!
                     status_text.info(f"✅ {done_count}/3 Phasen fertig...")
                 except Exception as exc:
                     errors[futures[future]] = exc
@@ -849,19 +950,35 @@ def extract_all_data(text):
         json_areas  = parse_llm_json(res_areas)  or {}
         json_stroem = parse_llm_json(res_stroem) or {"4_Stroem": []}
 
-        # Daten zusammenführen
         status_text.info("Führe Daten zusammen und bereite Tabellen vor...")
         if "3_Flaechen" not in json_main: json_main["3_Flaechen"] = {}
         json_main["3_Flaechen"].update(json_areas)
         
-        # Strom als Liste in die Logik übergeben
+        # NEU: Injected Metadata aus Dateinamen-Parsing UND gerettetem Text-AZ!
+        if "1_MetaData_Allgemein" not in json_main: json_main["1_MetaData_Allgemein"] = {}
+        for fname, meta in metadata_dict.items():
+            
+            # Wähle das beste Aktenzeichen aus (Text vor Dateiname)
+            best_az = meta.get("Gerettetes_AZ_aus_Text", "")
+            if not best_az:
+                best_az = meta.get("Aktenzeichen (Az)", "")
+                
+            json_main["1_MetaData_Allgemein"].update({
+                "Titel Genehmigungsbescheid": meta.get("Original_Dateiname", ""),
+                "Typ": meta.get("Typ", ""),
+                "Aktenzeichen (Az)": best_az, # Hier wird das gerettete eingesetzt!
+                "Anlagenanzahl": meta.get("Anlagenanzahl", ""),
+                "Gemarkung": meta.get("Gemarkung", ""),
+                "Monat": meta.get("Monat", ""),
+                "Jahr": meta.get("Jahr", "")
+            })
+            break 
+        
         stroem_liste = json_stroem.get("4_Stroem", [])
         
-        # Post Processing und Zusammenbau pro Anlage
         final_data = post_process_coordinates(json_main)
         final_data = restructure_and_calculate_data(final_data, stroem_liste)
         
-        # --- KI Gesamtzeit Zusammenfassung ---
         ki_total_sec = round(time.time() - ki_total_start, 1)
         ki_total_min = round(ki_total_sec / 60, 2)
         ki_avg_phase = round(ki_total_sec / 3, 1)
@@ -886,17 +1003,70 @@ def main():
 
     if "full_result" not in st.session_state: st.session_state.full_result = {}
     if "extracted_text" not in st.session_state: st.session_state.extracted_text = ""
+    if "redact_status" not in st.session_state: st.session_state.redact_status = {}
+    if "parsed_metadata" not in st.session_state: st.session_state.parsed_metadata = {}
 
     with st.sidebar:
-        st.header("1. Upload")
+        st.header("1. Upload & DSGVO-Schwärzung")
         pdfs = st.file_uploader("PDFs hochladen", type="pdf", accept_multiple_files=True)
+        
+        if pdfs:
+            all_redacted = True
+            for pdf_file in pdfs:
+                if pdf_file.name not in st.session_state.redact_status:
+                    all_redacted = False
+                    st.write(f"**Datei:** {pdf_file.name}")
+                    try:
+                        meta = parse_filename_metadata(pdf_file.name)
+                        st.info(f"Metadaten erfolgreich aus Dateiname gerettet: Aktenzeichen/Projekt {meta['Aktenzeichen (Az)']}, Gemarkung {meta['Gemarkung']}, Datum {meta['Monat']}-{meta['Jahr']}")
+                        st.session_state.parsed_metadata[pdf_file.name] = meta
+                    except ValueError as e:
+                        st.error(str(e))
+                        st.stop()
+                    
+                    if st.button(f"Schwärzung anwenden", key=f"btn_{pdf_file.name}"):
+                        with st.spinner("Physische Schwärzung wird angewendet (Intelligenter Scan + Kategorien)..."):
+                            # NEU: Das Skript entpackt jetzt die Bytes UND das heimlich gerettete Aktenzeichen
+                            redacted_bytes, saved_az = redact_pdf_dsgvo(pdf_file.getvalue())
+                            
+                            st.session_state.redact_status[pdf_file.name] = redacted_bytes
+                            # Speichert das gefundene Aktenzeichen direkt in den Session-State!
+                            st.session_state.parsed_metadata[pdf_file.name]["Gerettetes_AZ_aus_Text"] = saved_az
+                            
+                            st.success(f"{pdf_file.name} forensisch sicher geschwärzt!")
+                            if saved_az:
+                                st.success(f"✅ Aktenzeichen aus Text gerettet: {saved_az}")
+                            
+                            st.rerun()
+
+                elif pdf_file.name in st.session_state.redact_status:
+                    st.success(f"✅ {pdf_file.name} ist geschwärzt.")
+                    with st.expander(f"Komplettes geschwärztes PDF ansehen ({pdf_file.name})"):
+                        base64_pdf = base64.b64encode(st.session_state.redact_status[pdf_file.name]).decode("utf-8")
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=0" width="100%" height="800" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+
+            if not all_redacted:
+                st.warning("⚠️ Bitte alle Dokumente schwärzen, bevor es weitergeht.")
         
         st.write("---")
         st.header("2. Text lokal auslesen")
         if st.button("Start Lokale OCR"):
-            if pdfs:
-                with st.spinner("Lese Text...."):
-                    st.session_state.extracted_text = read_pdfs_tesseract(pdfs)
+            if not pdfs:
+                st.error("Bitte Dokumente hochladen!")
+                st.stop()
+            for f in pdfs:
+                if f.name not in st.session_state.redact_status:
+                    st.error(f"⚠️ {f.name} muss zuerst DSGVO-konform geschwärzt werden!")
+                    st.stop()
+                    
+            with st.spinner("Lese Text aus geschwärzten PDFs...."):
+                redacted_files = []
+                for f in pdfs:
+                    rf = io.BytesIO(st.session_state.redact_status[f.name])
+                    rf.name = f.name
+                    redacted_files.append(rf)
+                st.session_state.extracted_text = read_pdfs_tesseract(redacted_files)
 
         st.write("---")
         st.header("3. Daten Extrahieren")
@@ -905,16 +1075,14 @@ def main():
                 st.error("Bitte zuerst Text einlesen (Schritt 2)!")
                 st.stop()
             
-            st.session_state.full_result = extract_all_data(st.session_state.extracted_text)
+            st.session_state.full_result = extract_all_data(st.session_state.extracted_text, st.session_state.parsed_metadata)
 
         st.write("---")
         
-        # --- 4. ADMINISTRATIVER BEREICH (SIDEBAR) ---
         with st.sidebar:
             st.divider()
             st.markdown(" System Administration")
             
-            # Button, um das Passwortfeld anzuzeigen/auszublenden
             if "show_admin" not in st.session_state:
                 st.session_state.show_admin = False
                 
@@ -926,7 +1094,6 @@ def main():
                 admin_password_input = st.text_input("Admin-Passwort", type="password", key="admin_pw_input")
                 
                 if st.button("Reset ausführen", type="primary", use_container_width=True):
-                    # Versuch, Passwort aus st.secrets oder .env zu laden
                     correct_password = os.getenv("ADMIN_PASSWORD")
                     try:
                         if "ADMIN_PASSWORD" in st.secrets:
@@ -939,27 +1106,22 @@ def main():
                     elif admin_password_input == correct_password:
                         st.success("System führt einen Reset durch...")
                         
-                        # 1. Alle Caches leeren
                         st.cache_data.clear()
                         try:
                             st.cache_resource.clear()
                         except AttributeError:
                             pass
                         
-                        # 2. Kompletten Session State restlos löschen
                         for key in list(st.session_state.keys()):
                             del st.session_state[key]
                             
-                        # 3. Dem User Zeit geben, die Meldung zu lesen (1.5s)
                         time.sleep(1.5)
                         
-                        # 4. Server (Streamlit Cloud Backend) hart neu starten lassen
                         try:
                             os.utime(__file__, None)
                         except Exception:
                             pass
                             
-                        # 5. Frontend (Browser) per JavaScript zum echten Neuladen zwingen
                         import streamlit.components.v1 as components
                         components.html(
                             "<script>window.parent.location.reload();</script>",
@@ -976,10 +1138,8 @@ def main():
         if st.session_state.full_result:
             res = st.session_state.full_result
             
-            # --- 1. METADATEN (ALLGEMEIN) ---
             st.header("Allgemeine Projektdaten")
             
-            # Hole Metadaten aus dem Root-Objekt oder der ersten WEA (da es in restructure_and_calculate_data in die Anlagen verschoben wird)
             meta = res.get("1_MetaData_Allgemein", {})
             if not meta and res.get("2_WEA_Details"):
                 meta = res["2_WEA_Details"][0].get("1_MetaData_Allgemein", {})
@@ -988,13 +1148,11 @@ def main():
                 val = meta.get(key, "")
                 return val if val and str(val).strip() != "" else "-"
             
-            # Die Top-3 Infos als schöne große Kennzahlen
             col1, col2, col3 = st.columns(3)
             col1.metric("Aktenzeichen", get_meta_val("Aktenzeichen (Az)"))
             col2.metric("Genehmigungsdatum", get_meta_val("Genehmigungsdatum"))
             col3.metric("Vorhabenträger", get_meta_val("Vorhabenträger"))
             
-            # Den Rest der Metadaten in einen ausklappbaren Bereich
             with st.expander("Weitere allgemeine Daten", expanded=False):
                 display_meta = {k: (v if v and str(v).strip() != "" else "-") for k, v in meta.items()}
                 meta_df = pd.DataFrame(list(display_meta.items()), columns=["Eigenschaft", "Wert"])
@@ -1002,15 +1160,11 @@ def main():
             
             st.divider()
 
-            # --- 2. TECHNISCHE ANLAGENÜBERSICHT (WEA) ---
             st.header("Technische Anlagenübersicht")
             weas = res.get("2_WEA_Details", [])
             
             if weas:
-                # Wir holen uns die Namen der WEAs für die Reiter-Titel
                 wea_names = [wea.get("2_Technik_Standort", {}).get("Anlagen-Nr. / Kennzeichnung", f"WEA {i+1}") for i, wea in enumerate(weas)]
-                
-                # Wir erstellen für jede WEA einen eigenen Reiter (Tab)
                 wea_tabs = st.tabs(wea_names)
                 
                 for i, wea_tab in enumerate(wea_tabs):
@@ -1020,13 +1174,10 @@ def main():
                         flaeche = wea_data.get("3_Flaechen_und_Abstaende", {})
                         stroem = wea_data.get("4_Stroem", {})
                         
-                        # Bildschirm in 3 Spalten aufteilen
                         c1, c2, c3 = st.columns(3)
                         
-                        # --- Spalte 1: Technik & Standort ---
                         with c1:
                             st.subheader("Meta-Daten")
-                            # Leere Einträge rausfiltern
                             tech_clean = {k: v for k, v in tech.items() if v and str(v).strip() != ""}
                             if tech_clean:
                                 tech_df = pd.DataFrame(list(tech_clean.items()), columns=["Eigenschaft", "Wert"])
@@ -1034,7 +1185,6 @@ def main():
                             else:
                                 st.info("Keine technischen Spezifikationen gefunden.")
                                 
-                        # --- Spalte 2: Flächen & Abstände ---
                         with c2:
                             st.subheader("Flächen-Daten")
                             flaeche_clean = {k: v for k, v in flaeche.items() if v and str(v).strip() != ""}
@@ -1044,7 +1194,6 @@ def main():
                             else:
                                 st.info("Keine Flächen- oder Abstandsangaben gefunden.")
                                 
-                        # --- Spalte 3: Strom & Abschaltungen ---
                         with c3:
                             st.subheader("Strom-Daten")
                             stroem_clean = {k: v for k, v in stroem.items() if v and str(v).strip() != ""}
@@ -1056,7 +1205,6 @@ def main():
 
             st.divider()
             
-            # --- 3. DOWNLOAD / JSON FÜR IT ---
             with st.expander("Rohdaten (JSON) für Datenbank / Export anzeigen"):
                 st.code(json.dumps(st.session_state.full_result, indent=4, ensure_ascii=False), language="json")
 
