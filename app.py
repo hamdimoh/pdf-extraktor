@@ -1041,10 +1041,12 @@ def main():
 
                 elif pdf_file.name in st.session_state.redact_status:
                     st.success(f"✅ {pdf_file.name} ist geschwärzt.")
-                    with st.expander(f"Komplettes geschwärztes PDF ansehen ({pdf_file.name})"):
-                        base64_pdf = base64.b64encode(st.session_state.redact_status[pdf_file.name]).decode("utf-8")
-                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=0" width="100%" height="800" type="application/pdf"></iframe>'
-                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    st.download_button(
+                        label=f"⬇️ Geschwärztes PDF herunterladen ({pdf_file.name})",
+                        data=st.session_state.redact_status[pdf_file.name],
+                        file_name=f"geschwaerzt_{pdf_file.name}",
+                        mime="application/pdf"
+                    )
 
             if not all_redacted:
                 st.warning("⚠️ Bitte alle Dokumente schwärzen, bevor es weitergeht.")
