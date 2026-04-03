@@ -399,7 +399,7 @@ def extract_all_data(text, metadata_dict):
     DEINE EINZIGE AUFGABE IST ES, EIN GÜLTIGES JSON-OBJEKT ZU ERSTELLEN.
 
     WICHTIGE GRUNDREGELN:
-    1. Wenn ein Wert nicht eindeutig gefunden wird, schreibe "".
+    1. WICHTIG FÜR DIE ZEIT: Wenn ein Wert nicht im Text steht, LASSE DAS GESAMTE FELD WEG (erzeuge keine leeren Schlüssel wie "").
     2. GIB GENAU EIN (1) ZUSAMMENHÄNGENDES JSON-OBJEKT ZURÜCK!
     3. KEINE SCHÄTZUNG.
     4. KEINE INTERPRETATION.
@@ -660,6 +660,7 @@ def extract_all_data(text, metadata_dict):
 
     SUCHREGELN
 
+    0. WICHTIG: Lasse JSON-Schlüssel zwingend komplett weg, wenn du keinen Wert hast (keine leeren ""). Das spart Token!
     1. Extrahiere nur Zahlen mit Einheiten:
     m², qm, ha, Hektar.
 
@@ -732,8 +733,8 @@ def extract_all_data(text, metadata_dict):
     GIB GENAU EIN GÜLTIGES JSON-OBJEKT ZURÜCK, DAS EIN ARRAY "4_Stroem" ENTHÄLT. FÜR JEDE WEA GIBT ES EIN EIGENES OBJEKT IM ARRAY.
 
     WICHTIGE GRUNDREGELN:
-    1. Trage bei (Ja/Nein)-Feldern exakt "Ja" oder "Nein" ein. Wenn nichts erwähnt wird, schreibe "".
-    2. Wenn ein Wert (Datum, Temperatur, Art) nicht im Text steht, schreibe "".
+    1. WICHTIG FÜR DIE ZEIT: Wenn ein Wert nicht im Text steht, LASSE DEN SCHLÜSSEL KOMPLETT WEG (erzeuge keine Felder mit "").
+    2. Trage bei (Ja/Nein)-Feldern exakt "Ja" oder "Nein" ein, WENN ES IM TEXT STEHT. Sonst lass das Feld weg.
     3. Keine erfundenen "Hilfsspalten" oder interne Notizen. Nur die vorgegebenen JSON-Schlüssel verwenden!
     4. Wenn Abschaltungen für "alle Anlagen" gelten, kopiere diese Werte bei jeder einzelnen WEA in das Array.
     5. TAGESZEITEN: Extrahiere Tageszeiten exakt wie im Text (z.B. "1 Stunde vor Sonnenuntergang bis Sonnenaufgang"). Kürze diese niemals!
@@ -906,7 +907,11 @@ def extract_all_data(text, metadata_dict):
         status_text.info("⚡ Alle 3 Phasen werden parallel gestartet (mistral-large)...")
         update_ki_timer("Parallel Phase 1+2+3")
 
-        def call_api(name, chain, ctx, max_retries=4, base_delay=10):
+        def call_api(name, chain, ctx, max_retries=4, base_delay=5):
+            # Versetzter Start (Jitter) verhindert, dass mistral-large alle 3 Limits in derselben Sekunde bricht
+            if name == "areas": time.sleep(2.5)
+            elif name == "stroem": time.sleep(5)
+            
             for attempt in range(max_retries):
                 try:
                     result = chain.invoke({"context": ctx})
