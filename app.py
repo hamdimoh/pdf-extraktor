@@ -16,9 +16,7 @@ from dotenv import load_dotenv
 import gc
 from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 import pytesseract
-import fitz
 import io
-import base64
 
 # --- IMPORTS FÜR KI-EXTRAKTION ---
 from langchain_core.prompts import ChatPromptTemplate
@@ -31,16 +29,21 @@ load_dotenv(override=True)
 
 mistral_key = os.getenv("MISTRAL_API_KEY")
 
-try:
-    if "MISTRAL_API_KEY" in st.secrets:
-        mistral_key = st.secrets["MISTRAL_API_KEY"]
-except Exception:
-    pass
+_secrets_paths = [
+    os.path.expanduser("~/.streamlit/secrets.toml"),
+    os.path.join(os.path.dirname(__file__), ".streamlit", "secrets.toml"),
+]
+if not mistral_key and any(os.path.exists(p) for p in _secrets_paths):
+    try:
+        if "MISTRAL_API_KEY" in st.secrets:
+            mistral_key = st.secrets["MISTRAL_API_KEY"]
+    except Exception:
+        pass
 
 if mistral_key:
     os.environ["MISTRAL_API_KEY"] = mistral_key
 else:
-    st.error("⚠️ MISTRAL_API_KEY fehlt in den Secrets oder der .env Datei!")
+    st.error("⚠️ MISTRAL_API_KEY fehlt in der .env Datei!")
     st.stop()
 
 # ---------------- HELPER: DATEINAMEN PARSEN ----------------
@@ -95,81 +98,13 @@ def parse_filename_metadata(filename):
     return meta
 
 
-# --- NEUE DSGVO SCHWÄRZUNGS-FUNKTION (NUR ERSTE 5 SEITEN & NUR REGEX) ---
-def redact_pdf_dsgvo(input_pdf_bytes):
-    doc = fitz.open(stream=input_pdf_bytes, filetype="pdf")
-    
-    # --- 1. DATEN-RETTUNG (AKTENZEICHEN VOR DER ZERSTÖRUNG AUSLESEN) ---
-    extracted_az = ""
-    az_pattern = re.compile(r"(?i)(?:Aktenzeichen|Geschäftszeichen|Az\.|Dokument\s*Nr\.?|Zeichen)[\s:]+([A-Za-z0-9\-\./]+)")
-    
-    for i in range(min(5, len(doc))):  # Nur die ersten 5 Seiten prüfen
-        page_text = doc[i].get_text("text")
-        az_match = az_pattern.search(page_text)
-        if az_match:
-            extracted_az = az_match.group(1).strip()
-            break
-
-    # --- 2. STRENG LIMITIERTE REGEX-MUSTER (Nur Personen, Firmen, Kontakt & Firmen-Adressen) ---
-    patterns = [
-        # 1. Personen (inklusive Herr, Frau, Bearbeiter)
-        re.compile(r"(?i)\b(?:Bearbeiter(?:/in)?|Ansprechpartner|Herrn?|Frau)\b[\s:]+(?:Dr\.\s+|Prof\.\s+|Dipl\.-Ing\.\s+)?(?:[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+){0,2})"),
-        
-        # 2. Firmen (GmbH, KG, AG etc.)
-        re.compile(r"(?i)(?:Antragsteller(?:in)?[:\s]*)?(?:[A-ZÄÖÜ0-9][a-zA-Z0-9ÄÖÜäöüß\-\.&]*(?:\s+[a-zA-Z0-9ÄÖÜäöüß\-\.&]+){0,7}\s*)(?:GmbH|GbR|AG|OHG)(?:\s*&\s*Co\.?)?(?:\s+[a-zA-Z0-9ÄÖÜäöüß\-\.&]+){0,6}(?:\s*KG)?"),
-        
-        # 3. Kontaktdaten (Telefon, Fax, E-Mail, Hausruf)
-        re.compile(r"(?i)\b(?:Telefon|Tel\.|Hausruf|Telefax|Fax|E-Mail|Mail)[\s:]+[+0-9a-zA-Z\.\-\/@]+(?:\s+[0-9a-zA-Z\.\-\/@]+){0,2}"),
-        
-        # 4. Vertretung (Geschäftsführer etc.)
-        re.compile(r"(?i)\bvertreten\s+durch\s+(?:[a-zA-ZÄÖÜäöüß\-\.]+(?:\s+[a-zA-ZÄÖÜäöüß\-\.]+){0,5})"),
-        
-        # 5. FIRMEN-ADRESSE (PLZ + Ort): Nur wenn Firma davor steht
-        re.compile(r"(?i)(?:GmbH|GbR|AG|OHG|KG|Antragsteller(?:in)?)[\s\S]{1,150}?(\b\d{5}\s+[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+(?:\s+[A-ZÄÖÜa-zA-ZÄÖÜäöüß\-]+)?\b)"),
-        
-        # 6. FIRMEN-STRASSE: Nur wenn Firma davor steht
-        re.compile(r"(?i)(?:GmbH|GbR|AG|OHG|KG|Antragsteller(?:in)?)[\s\S]{1,150}?(\b[A-ZÄÖÜ][a-zA-ZÄÖÜäöüß\-]+\s*(?:str\.|straße|weg|platz|gasse|ring|allee)\s+\d+[a-z]?\b)")
-    ]
-    
-    # WICHTIG: Wir scannen AUSSCHLIESSLICH die ersten 5 Seiten (Index 0 bis 4)
-    for i in range(min(2, len(doc))):
-        page = doc[i]
-        text = page.get_text("text")
-        
-        needs_redaction = False
-            
-        # Gezielte Regex-Suche auf der Seite
-        for pattern in patterns:
-            for match in pattern.finditer(text):
-                
-                # Wenn eine Fang-Klammer da ist (bei Adresse), nimm nur den Inhalt der Klammer
-                clean_match = (match.group(1) if match.groups() else match.group(0)).strip().replace('\n', ' ')
-                clean_match = re.sub(r'\s+', ' ', clean_match).strip()
-                
-                if len(clean_match) > 4:
-                    try:
-                        bboxes = page.search_for(clean_match)
-                        for bbox in bboxes:
-                            page.add_redact_annot(bbox, fill=(0, 0, 0))
-                            needs_redaction = True
-                    except Exception:
-                        pass
-                        
-        if needs_redaction:
-            page.apply_redactions()
-            
-    redacted_pdf_bytes = doc.write(garbage=4, deflate=True, clean=True)
-    doc.close()
-    
-    return redacted_pdf_bytes, extracted_az
-
-
 # ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) ----------------
 def read_pdfs_tesseract(files):
     full_text = ""
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    timer_text = st.empty()
+    with st.sidebar:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        timer_text = st.empty()
     total_files = len(files)
     ocr_total_start = time.time()
     all_durations = []
@@ -177,38 +112,38 @@ def read_pdfs_tesseract(files):
     for i, f in enumerate(files):
         file_start_time = time.time()
         status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Analysiere PDF-Struktur)...")
-        
+
         pdf_bytes = f.getvalue()
-        
+
         try:
             info = pdfinfo_from_bytes(pdf_bytes)
             total_pages = info["Pages"]
         except Exception as e:
             st.error(f"Fehler beim Lesen der PDF-Info für {f.name}: {e}")
             continue
-            
+
         doc_text = ""
         for page_num in range(1, total_pages + 1):
             elapsed_page = round(time.time() - file_start_time, 0)
-            status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Scanne Seite {page_num} von {total_pages})...")
-            timer_text.caption(f"⏱ Verstrichene Zeit für diese Datei: {int(elapsed_page)} Sek.")
-            
+            status_text.text(f"Datei {i+1}/{total_files}: {f.name}\nSeite {page_num} / {total_pages}")
+            timer_text.caption(f"⏱ {int(elapsed_page)} Sek.")
+
             images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
             img = images[0]
-            
+
             try:
                 text = pytesseract.image_to_string(img, lang='deu')
             except:
                 text = pytesseract.image_to_string(img, lang='eng')
-                
+
             doc_text += f"\n\n--- SEITE {page_num} ---\n{text}\n"
-            
+
             del img
             del images
-            gc.collect() 
-            
+            gc.collect()
+
         full_text += f"\n\n--- DOKUMENT START: {f.name} ---\n{doc_text}\n--- DOKUMENT ENDE ---\n"
-        
+
         file_duration = round(time.time() - file_start_time, 1)
         all_durations.append(file_duration)
         status_text.success(f"⚡ {f.name} fertig in {file_duration} Sek.!")
@@ -344,13 +279,15 @@ def restructure_and_calculate_data(data, stroem_list):
     return data
 
 # ---------------- 2. EXTRAKTION (3-PHASEN ARCHITEKTUR) ----------------
-def extract_all_data(text, metadata_dict):
+def extract_all_data(text, metadata_dict, model_name="mistral-large-2512"):
     status_text = st.empty()
-    
+
+    is_large = (model_name == "mistral-large-2512")
+
     context_window_main = text[:8000] + "\n\n... [TEXT ÜBERSPRUNGEN] ...\n\n"
 
     coord_matches = [m.start() for m in re.finditer(r'(?i)rechtswert|hochwert|utm-koordinaten', text)]
-    for idx in coord_matches[:6]: 
+    for idx in coord_matches[:6]:
         context_window_main += text[max(0, idx - 800):min(len(text), idx + 800)] + "\n...\n"
 
     nature_matches = [m.start() for m in re.finditer(r'(?i)heilquelle|hwsg|trinkwasser|twsg|naturschutzgebiet|ffh|biotop|vsg|brutplatz|horst|abstand|entfernung|mindestabstand', text)]
@@ -361,7 +298,7 @@ def extract_all_data(text, metadata_dict):
 
     context_window_areas = ""
     area_matches = [m.start() for m in re.finditer(r'(?i)fundament|aufstandsfläche|zuwegung|zufahrt|wegeausbau|kranstellfläche|montagefläche|waldumwandlung|versiegelung|inanspruchnahme|waldersatz|aufforstung', text)]
-    
+
     filtered_matches = []
     last_added_idx = -10000
     for idx in area_matches:
@@ -380,14 +317,14 @@ def extract_all_data(text, metadata_dict):
 
     context_window_stroem = ""
     stroem_matches = [m.start() for m in re.finditer(r'(?i)abschalt|betrieb|schall|fledermaus|vogel|milan|mahd|ernte|pflug|eisansatz|eiserkennung|schatten|radar|antikollision|kamera|identiflight|monitoring|nacht|lärm|rotorblattheizung|flight\s*manager|immission|ersatzgeld|landschaftsbild|ausgleich|artenschutzzahlung|bürgschaft|rückbau|geräusch|db\(a\)', text)]
-    
+
     last_added_idx = -10000
     filtered_stroem = []
     for idx in stroem_matches:
         if idx - last_added_idx < 1000: continue
         filtered_stroem.append(idx)
         last_added_idx = idx
-        
+
     for idx in filtered_stroem[-45:]:
         context_window_stroem += text[max(0, idx - 1000):min(len(text), idx + 1000)] + "\n...\n"
 
@@ -847,7 +784,7 @@ def extract_all_data(text, metadata_dict):
 
     
     # Modelle Setup
-    llm = ChatMistralAI(model="mistral-large-2512", temperature=0.0, timeout=300, max_retries=1)
+    llm = ChatMistralAI(model=model_name, temperature=0.0, timeout=300, max_retries=1, model_kwargs={"response_format": {"type": "json_object"}})
     
     chain_main = ChatPromptTemplate.from_template(template_main) | llm | StrOutputParser()
     chain_areas = ChatPromptTemplate.from_template(template_areas) | llm | StrOutputParser()
@@ -911,7 +848,7 @@ def extract_all_data(text, metadata_dict):
             # Versetzter Start (Jitter) verhindert, dass mistral-large alle 3 Limits in derselben Sekunde bricht
             if name == "areas": time.sleep(2.5)
             elif name == "stroem": time.sleep(5)
-            
+
             for attempt in range(max_retries):
                 try:
                     result = chain.invoke({"context": ctx})
@@ -1008,135 +945,55 @@ def main():
 
     if "full_result" not in st.session_state: st.session_state.full_result = {}
     if "extracted_text" not in st.session_state: st.session_state.extracted_text = ""
-    if "redact_status" not in st.session_state: st.session_state.redact_status = {}
     if "parsed_metadata" not in st.session_state: st.session_state.parsed_metadata = {}
 
     with st.sidebar:
-        st.header("1. Upload & DSGVO-Schwärzung")
+        st.header("1. Upload")
         pdfs = st.file_uploader("PDFs hochladen", type="pdf", accept_multiple_files=True)
-        
+
         if pdfs:
-            all_redacted = True
             for pdf_file in pdfs:
-                if pdf_file.name not in st.session_state.redact_status:
-                    all_redacted = False
-                    st.write(f"**Datei:** {pdf_file.name}")
+                if pdf_file.name not in st.session_state.parsed_metadata:
                     try:
                         meta = parse_filename_metadata(pdf_file.name)
-                        st.info(f"Metadaten erfolgreich aus Dateiname gerettet: Aktenzeichen/Projekt {meta['Aktenzeichen (Az)']}, Gemarkung {meta['Gemarkung']}, Datum {meta['Monat']}-{meta['Jahr']}")
                         st.session_state.parsed_metadata[pdf_file.name] = meta
+                        st.info(f"Metadaten aus Dateiname: Az. {meta['Aktenzeichen (Az)']}, Gemarkung {meta['Gemarkung']}, {meta['Monat']}-{meta['Jahr']}")
                     except ValueError as e:
                         st.error(str(e))
                         st.stop()
-                    
-                    if st.button(f"Schwärzung anwenden", key=f"btn_{pdf_file.name}"):
-                        with st.spinner("Physische Schwärzung wird angewendet (Intelligenter Scan + Kategorien)..."):
-                            # NEU: Das Skript entpackt jetzt die Bytes UND das heimlich gerettete Aktenzeichen
-                            redacted_bytes, saved_az = redact_pdf_dsgvo(pdf_file.getvalue())
-                            
-                            st.session_state.redact_status[pdf_file.name] = redacted_bytes
-                            # Speichert das gefundene Aktenzeichen direkt in den Session-State!
-                            st.session_state.parsed_metadata[pdf_file.name]["Gerettetes_AZ_aus_Text"] = saved_az
-                            
-                            st.success(f"{pdf_file.name} forensisch sicher geschwärzt!")
-                            if saved_az:
-                                st.success(f"✅ Aktenzeichen aus Text gerettet: {saved_az}")
-                            
-                            st.rerun()
+                else:
+                    st.success(f"✅ {pdf_file.name}")
 
-                elif pdf_file.name in st.session_state.redact_status:
-                    st.success(f"✅ {pdf_file.name} ist geschwärzt.")
-                    st.download_button(
-                        label=f"⬇️ Geschwärztes PDF herunterladen ({pdf_file.name})",
-                        data=st.session_state.redact_status[pdf_file.name],
-                        file_name=f"geschwaerzt_{pdf_file.name}",
-                        mime="application/pdf"
-                    )
-
-            if not all_redacted:
-                st.warning("⚠️ Bitte alle Dokumente schwärzen, bevor es weitergeht.")
-        
         st.write("---")
         st.header("2. Text lokal auslesen")
         if st.button("Start Lokale OCR"):
             if not pdfs:
                 st.error("Bitte Dokumente hochladen!")
                 st.stop()
-            for f in pdfs:
-                if f.name not in st.session_state.redact_status:
-                    st.error(f"⚠️ {f.name} muss zuerst DSGVO-konform geschwärzt werden!")
-                    st.stop()
-                    
-            with st.spinner("Lese Text aus geschwärzten PDFs...."):
-                redacted_files = []
-                for f in pdfs:
-                    rf = io.BytesIO(st.session_state.redact_status[f.name])
-                    rf.name = f.name
-                    redacted_files.append(rf)
-                st.session_state.extracted_text = read_pdfs_tesseract(redacted_files)
+
+            with st.spinner("Lese Text aus PDFs...."):
+                st.session_state.extracted_text = read_pdfs_tesseract(pdfs)
 
         st.write("---")
         st.header("3. Daten Extrahieren")
+
+        model_choice = st.radio(
+            "Modell auswählen:",
+            options=["mistral-large-2512", "mistral-small-2503"],
+            captions=["Höchste Genauigkeit", "Schneller & günstiger"],
+            index=0,
+        )
+
         if st.button("Start KI-Extraktion"):
             if not st.session_state.extracted_text:
                 st.error("Bitte zuerst Text einlesen (Schritt 2)!")
                 st.stop()
-            
-            st.session_state.full_result = extract_all_data(st.session_state.extracted_text, st.session_state.parsed_metadata)
 
-        st.write("---")
-        
-        with st.sidebar:
-            st.divider()
-            st.markdown(" System Administration")
-            
-            if "show_admin" not in st.session_state:
-                st.session_state.show_admin = False
-                
-            if st.button("🔄 App neu starten" if not st.session_state.show_admin else "Abbrechen", use_container_width=True):
-                st.session_state.show_admin = not st.session_state.show_admin
-                st.rerun()
-                
-            if st.session_state.show_admin:
-                admin_password_input = st.text_input("Admin-Passwort", type="password", key="admin_pw_input")
-                
-                if st.button("Reset ausführen", type="primary", use_container_width=True):
-                    correct_password = os.getenv("ADMIN_PASSWORD")
-                    try:
-                        if "ADMIN_PASSWORD" in st.secrets:
-                            correct_password = st.secrets["ADMIN_PASSWORD"]
-                    except Exception:
-                        pass
-                    
-                    if not correct_password:
-                        st.error("⚠️ Kein Admin-Passwort.")
-                    elif admin_password_input == correct_password:
-                        st.success("System führt einen Reset durch...")
-                        
-                        st.cache_data.clear()
-                        try:
-                            st.cache_resource.clear()
-                        except AttributeError:
-                            pass
-                        
-                        for key in list(st.session_state.keys()):
-                            del st.session_state[key]
-                            
-                        time.sleep(1.5)
-                        
-                        try:
-                            os.utime(__file__, None)
-                        except Exception:
-                            pass
-                            
-                        import streamlit.components.v1 as components
-                        components.html(
-                            "<script>window.parent.location.reload();</script>",
-                            height=0, width=0
-                        )
-                        st.stop()
-                    elif admin_password_input:
-                        st.error("❌ Falsches Passwort!")
+            st.session_state.full_result = extract_all_data(
+                st.session_state.extracted_text,
+                st.session_state.parsed_metadata,
+                model_name=model_choice,
+            )
 
     # --- ANZEIGE ---
     tab1, tab2 = st.tabs(["Ergebnis Dashboard", "Extrahierter Text (Tesseract)"])
