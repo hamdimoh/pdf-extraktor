@@ -98,68 +98,37 @@ def parse_filename_metadata(filename):
     return meta
 
 
-# ---------------- 1. BLITZSCHNELLES LOKALES OCR (TESSERACT) ----------------
-def read_pdfs_tesseract(files):
-    full_text = ""
-    with st.sidebar:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        timer_text = st.empty()
-    total_files = len(files)
-    ocr_total_start = time.time()
-    all_durations = []
+# ---------------- HELPER: OCR EINZELNE DATEI ----------------
+def ocr_single_file(f, sb_status, sb_timer, file_idx, total_files):
+    file_start = time.time()
+    pdf_bytes = f.getvalue()
 
-    for i, f in enumerate(files):
-        file_start_time = time.time()
-        status_text.text(f"Lese Datei {i+1}/{total_files}: {f.name} (Analysiere PDF-Struktur)...")
+    try:
+        info = pdfinfo_from_bytes(pdf_bytes)
+        total_pages = info["Pages"]
+    except Exception as e:
+        sb_status.error(f"PDF-Fehler: {e}")
+        return ""
 
-        pdf_bytes = f.getvalue()
+    doc_text = ""
+    for page_num in range(1, total_pages + 1):
+        elapsed = int(time.time() - file_start)
+        sb_status.text(f"Seite {page_num} / {total_pages}")
+        sb_timer.caption(f"⏱ {elapsed} Sek.")
 
+        images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
+        img = images[0]
         try:
-            info = pdfinfo_from_bytes(pdf_bytes)
-            total_pages = info["Pages"]
-        except Exception as e:
-            st.error(f"Fehler beim Lesen der PDF-Info für {f.name}: {e}")
-            continue
+            page_text = pytesseract.image_to_string(img, lang='deu')
+        except:
+            page_text = pytesseract.image_to_string(img, lang='eng')
+        doc_text += f"\n\n--- SEITE {page_num} ---\n{page_text}\n"
+        del img, images
+        gc.collect()
 
-        doc_text = ""
-        for page_num in range(1, total_pages + 1):
-            elapsed_page = round(time.time() - file_start_time, 0)
-            status_text.text(f"Datei {i+1}/{total_files}: {f.name}\nSeite {page_num} / {total_pages}")
-            timer_text.caption(f"⏱ {int(elapsed_page)} Sek.")
-
-            images = convert_from_bytes(pdf_bytes, dpi=150, first_page=page_num, last_page=page_num)
-            img = images[0]
-
-            try:
-                text = pytesseract.image_to_string(img, lang='deu')
-            except:
-                text = pytesseract.image_to_string(img, lang='eng')
-
-            doc_text += f"\n\n--- SEITE {page_num} ---\n{text}\n"
-
-            del img
-            del images
-            gc.collect()
-
-        full_text += f"\n\n--- DOKUMENT START: {f.name} ---\n{doc_text}\n--- DOKUMENT ENDE ---\n"
-
-        file_duration = round(time.time() - file_start_time, 1)
-        all_durations.append(file_duration)
-        status_text.success(f"⚡ {f.name} fertig in {file_duration} Sek.!")
-        timer_text.empty()
-        progress_bar.progress((i + 1) / total_files)
-
-    ocr_total_sec = round(time.time() - ocr_total_start, 1)
-    ocr_total_min = round(ocr_total_sec / 60, 2)
-    avg_per_file = round(sum(all_durations) / len(all_durations), 1) if all_durations else 0
-
-    status_text.empty()
-    timer_text.empty()
-    progress_bar.empty()
-    
-    st.success(f"✅ OCR abgeschlossen! Gesamtdauer: **{ocr_total_sec} Sek. ({ocr_total_min} Min.)** | Ø pro Datei: **{avg_per_file} Sek.**")
-    return full_text
+    dur = round(time.time() - file_start, 1)
+    sb_status.success(f"✅ OCR fertig — {dur} Sek.")
+    return f"\n\n--- DOKUMENT START: {f.name} ---\n{doc_text}\n--- DOKUMENT ENDE ---\n"
 
 # ---------------- HELPER: KOORDINATEN UMRECHNEN (DMS -> UTM) ----------------
 def dms_string_to_decimal(dms_str):
@@ -939,144 +908,234 @@ def extract_all_data(text, metadata_dict, model_name="mistral-large-2512"):
             st.error(f"Kritischer Fehler bei der API-Abfrage: {e}")
         return {}
 
+# ---------------- HELPER: ERGEBNIS EINES DOKUMENTS ANZEIGEN ----------------
+def show_document_result(filename, result):
+    if not result:
+        st.warning(f"Keine Ergebnisse für {filename}.")
+        return
+
+    meta = result.get("1_MetaData_Allgemein", {})
+    if not meta and result.get("2_WEA_Details"):
+        meta = result["2_WEA_Details"][0].get("1_MetaData_Allgemein", {})
+
+    def v(key):
+        val = meta.get(key, "")
+        return val if val and str(val).strip() != "" else "-"
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Aktenzeichen", v("Aktenzeichen (Az)"))
+    col2.metric("Genehmigungsdatum", v("Genehmigungsdatum"))
+    col3.metric("Vorhabenträger", v("Vorhabenträger"))
+
+    with st.expander("Weitere allgemeine Daten", expanded=False):
+        display_meta = {k: (val if val and str(val).strip() != "" else "-") for k, val in meta.items()}
+        st.dataframe(pd.DataFrame(list(display_meta.items()), columns=["Eigenschaft", "Wert"]),
+                     hide_index=True, use_container_width=True)
+
+    st.divider()
+    st.subheader("Technische Anlagenübersicht")
+
+    weas = result.get("2_WEA_Details", [])
+    if weas:
+        wea_names = [
+            wea.get("2_Technik_Standort", {}).get("Anlagen-Nr. / Kennzeichnung", f"WEA {i+1}")
+            for i, wea in enumerate(weas)
+        ]
+        wea_tabs = st.tabs(wea_names)
+        for i, wea_tab in enumerate(wea_tabs):
+            with wea_tab:
+                tech    = weas[i].get("2_Technik_Standort", {})
+                flaeche = weas[i].get("3_Flaechen_und_Abstaende", {})
+                stroem  = weas[i].get("4_Stroem", {})
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.subheader("Technik & Standort")
+                    clean = {k: val for k, val in tech.items() if val and str(val).strip() != ""}
+                    if clean:
+                        st.dataframe(pd.DataFrame(list(clean.items()), columns=["Eigenschaft", "Wert"]),
+                                     hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Keine Angaben gefunden.")
+                with c2:
+                    st.subheader("Flächen & Abstände")
+                    clean = {k: val for k, val in flaeche.items() if val and str(val).strip() != ""}
+                    if clean:
+                        st.dataframe(pd.DataFrame(list(clean.items()), columns=["Eigenschaft", "Wert"]),
+                                     hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Keine Angaben gefunden.")
+                with c3:
+                    st.subheader("Betriebsauflagen")
+                    clean = {k: val for k, val in stroem.items() if val and str(val).strip() != ""}
+                    if clean:
+                        st.dataframe(pd.DataFrame(list(clean.items()), columns=["Regel", "Wert"]),
+                                     hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Keine Angaben gefunden.")
+    else:
+        st.info("Keine WEA-Daten extrahiert.")
+
+    st.divider()
+    with st.expander("Rohdaten (JSON)", expanded=False):
+        st.code(json.dumps(result, indent=4, ensure_ascii=False), language="json")
+
+
 # ---------------- MAIN UI ----------------
 def main():
     st.title("PDF Extraktor")
 
-    if "full_result" not in st.session_state: st.session_state.full_result = {}
-    if "extracted_text" not in st.session_state: st.session_state.extracted_text = ""
+    if "all_results"     not in st.session_state: st.session_state.all_results     = {}
     if "parsed_metadata" not in st.session_state: st.session_state.parsed_metadata = {}
+    if "processing"      not in st.session_state: st.session_state.processing      = False
+    if "proc_queue"      not in st.session_state: st.session_state.proc_queue      = []
+    if "proc_model"      not in st.session_state: st.session_state.proc_model      = "mistral-large-2512"
 
     with st.sidebar:
         st.header("1. Upload")
-        pdfs = st.file_uploader("PDFs hochladen", type="pdf", accept_multiple_files=True)
+        pdfs = st.file_uploader("PDFs hochladen (max. 10)", type="pdf", accept_multiple_files=True)
 
         if pdfs:
+            if len(pdfs) > 10:
+                st.error("Maximal 10 PDFs gleichzeitig!")
+                st.stop()
             for pdf_file in pdfs:
                 if pdf_file.name not in st.session_state.parsed_metadata:
                     try:
                         meta = parse_filename_metadata(pdf_file.name)
                         st.session_state.parsed_metadata[pdf_file.name] = meta
-                        st.info(f"Metadaten aus Dateiname: Az. {meta['Aktenzeichen (Az)']}, Gemarkung {meta['Gemarkung']}, {meta['Monat']}-{meta['Jahr']}")
                     except ValueError as e:
                         st.error(str(e))
                         st.stop()
-                else:
-                    st.success(f"✅ {pdf_file.name}")
+                done = pdf_file.name in st.session_state.all_results
+                st.caption(f"{'✅' if done else '📄'} {pdf_file.name}")
 
-        st.write("---")
-        st.header("2. Text lokal auslesen")
-        if st.button("Start Lokale OCR"):
-            if not pdfs:
-                st.error("Bitte Dokumente hochladen!")
-                st.stop()
-
-            with st.spinner("Lese Text aus PDFs...."):
-                st.session_state.extracted_text = read_pdfs_tesseract(pdfs)
-
-        st.write("---")
-        st.header("3. Daten Extrahieren")
-
+        st.divider()
+        st.header("2. Modell auswählen")
         model_choice = st.radio(
-            "Modell auswählen:",
+            "",
             options=["mistral-large-2512", "mistral-small-2503"],
             captions=["Höchste Genauigkeit", "Schneller & günstiger"],
             index=0,
+            label_visibility="collapsed",
         )
 
-        if st.button("Start KI-Extraktion"):
-            if not st.session_state.extracted_text:
-                st.error("Bitte zuerst Text einlesen (Schritt 2)!")
-                st.stop()
+        st.divider()
+        sb_progress   = st.empty()
+        sb_ocr_phase  = st.empty()
+        sb_ocr_status = st.empty()
+        sb_ocr_timer  = st.empty()
+        st.caption("──────────────────")
+        sb_ki_phase   = st.empty()
+        sb_ki_status  = st.empty()
 
-            st.session_state.full_result = extract_all_data(
-                st.session_state.extracted_text,
-                st.session_state.parsed_metadata,
-                model_name=model_choice,
-            )
+        start = st.button(
+            "🚀 Start Analyse",
+            type="primary",
+            use_container_width=True,
+            disabled=(not pdfs or st.session_state.processing),
+        )
 
-    # --- ANZEIGE ---
-    tab1, tab2 = st.tabs(["Ergebnis Dashboard", "Extrahierter Text (Tesseract)"])
-    
-    with tab1:
-        if st.session_state.full_result:
-            res = st.session_state.full_result
-            
-            st.header("Allgemeine Projektdaten")
-            
-            meta = res.get("1_MetaData_Allgemein", {})
-            if not meta and res.get("2_WEA_Details"):
-                meta = res["2_WEA_Details"][0].get("1_MetaData_Allgemein", {})
-            
-            def get_meta_val(key):
-                val = meta.get(key, "")
-                return val if val and str(val).strip() != "" else "-"
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Aktenzeichen", get_meta_val("Aktenzeichen (Az)"))
-            col2.metric("Genehmigungsdatum", get_meta_val("Genehmigungsdatum"))
-            col3.metric("Vorhabenträger", get_meta_val("Vorhabenträger"))
-            
-            with st.expander("Weitere allgemeine Daten", expanded=False):
-                display_meta = {k: (v if v and str(v).strip() != "" else "-") for k, v in meta.items()}
-                meta_df = pd.DataFrame(list(display_meta.items()), columns=["Eigenschaft", "Wert"])
-                st.dataframe(meta_df, hide_index=True, use_container_width=True)
-            
+    # ── Start: Pipeline initialisieren ──
+    if start and pdfs:
+        st.session_state.all_results = {}
+        st.session_state.proc_model  = model_choice
+        st.session_state.proc_queue  = [
+            (f.name, f.getvalue(), st.session_state.parsed_metadata.get(f.name, {}))
+            for f in pdfs
+        ]
+        st.session_state.processing = True
+
+    # ── Pipeline: OCR-Thread + KI-Thread laufen parallel ──
+    if st.session_state.processing:
+        from queue import Queue
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        import streamlit.runtime.scriptrunner as _ssr
+
+        queue_data = st.session_state.proc_queue
+        total      = len(queue_data)
+        model      = st.session_state.proc_model
+        ocr_q      = Queue()
+        ctx        = _ssr.get_script_run_ctx()
+
+        # Live-Platzhalter im Dashboard — einer pro Dokument
+        st.header(f"Analyse läuft — {total} Dokument{'e' if total > 1 else ''}")
+        result_slots = []
+        for fname, _, _ in queue_data:
+            base  = os.path.splitext(fname)[0]
+            label = (base[:38] + "…") if len(base) > 38 else base
+            st.markdown(f"**{label}**")
+            slot = st.empty()
+            slot.info("⏳ Warte auf Analyse…")
+            result_slots.append(slot)
             st.divider()
 
-            st.header("Technische Anlagenübersicht")
-            weas = res.get("2_WEA_Details", [])
-            
-            if weas:
-                wea_names = [wea.get("2_Technik_Standort", {}).get("Anlagen-Nr. / Kennzeichnung", f"WEA {i+1}") for i, wea in enumerate(weas)]
-                wea_tabs = st.tabs(wea_names)
-                
-                for i, wea_tab in enumerate(wea_tabs):
-                    with wea_tab:
-                        wea_data = weas[i]
-                        tech = wea_data.get("2_Technik_Standort", {})
-                        flaeche = wea_data.get("3_Flaechen_und_Abstaende", {})
-                        stroem = wea_data.get("4_Stroem", {})
-                        
-                        c1, c2, c3 = st.columns(3)
-                        
-                        with c1:
-                            st.subheader("Meta-Daten")
-                            tech_clean = {k: v for k, v in tech.items() if v and str(v).strip() != ""}
-                            if tech_clean:
-                                tech_df = pd.DataFrame(list(tech_clean.items()), columns=["Eigenschaft", "Wert"])
-                                st.dataframe(tech_df, hide_index=True, use_container_width=True)
-                            else:
-                                st.info("Keine technischen Spezifikationen gefunden.")
-                                
-                        with c2:
-                            st.subheader("Flächen-Daten")
-                            flaeche_clean = {k: v for k, v in flaeche.items() if v and str(v).strip() != ""}
-                            if flaeche_clean:
-                                flaeche_df = pd.DataFrame(list(flaeche_clean.items()), columns=["Eigenschaft", "Wert"])
-                                st.dataframe(flaeche_df, hide_index=True, use_container_width=True)
-                            else:
-                                st.info("Keine Flächen- oder Abstandsangaben gefunden.")
-                                
-                        with c3:
-                            st.subheader("Strom-Daten")
-                            stroem_clean = {k: v for k, v in stroem.items() if v and str(v).strip() != ""}
-                            if stroem_clean:
-                                stroem_df = pd.DataFrame(list(stroem_clean.items()), columns=["Regel", "Wert"])
-                                st.dataframe(stroem_df, hide_index=True, use_container_width=True)
-                            else:
-                                st.info("Keine spezifischen Betriebs-Regulationen gefunden.")
+        def _ocr():
+            _ssr.add_script_run_ctx(threading.current_thread(), ctx)
+            for i, (fname, pdf_bytes, meta) in enumerate(queue_data):
+                sb_ocr_phase.info(f"📄 OCR  [{i+1} / {total}]\n{fname}")
+                f_obj = io.BytesIO(pdf_bytes)
+                f_obj.name = fname
+                text = ocr_single_file(f_obj, sb_ocr_status, sb_ocr_timer, i + 1, total)
+                ocr_q.put((i, fname, text, meta))
+            ocr_q.put(None)  # Sentinel
 
-            st.divider()
-            
-            with st.expander("Rohdaten (JSON) für Datenbank / Export anzeigen"):
-                st.code(json.dumps(st.session_state.full_result, indent=4, ensure_ascii=False), language="json")
+        ki_done = [0]
 
+        def _ki():
+            _ssr.add_script_run_ctx(threading.current_thread(), ctx)
+            while True:
+                item = ocr_q.get(timeout=3600)
+                if item is None:
+                    break
+                i, fname, text, meta = item
+                sb_ki_phase.info(f"🤖 KI  [{i+1} / {total}]\n{fname}")
+                sb_ki_status.text("3 Phasen laufen parallel…")
+
+                result = extract_all_data(text, {fname: meta}, model_name=model)
+                st.session_state.all_results[fname] = result
+
+                # Ergebnis sofort im Dashboard anzeigen
+                with result_slots[i].container():
+                    show_document_result(fname, result)
+
+                ki_done[0] += 1
+                sb_progress.progress(ki_done[0] / total)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_ocr = pool.submit(_ocr)
+            f_ki  = pool.submit(_ki)
+            f_ocr.result()
+            f_ki.result()
+
+        st.session_state.processing = False
+        sb_ocr_phase.empty()
+        sb_ocr_status.empty()
+        sb_ocr_timer.empty()
+        sb_ki_phase.success(f"✅ Alle {total} Dokumente fertig!")
+        sb_ki_status.empty()
+        st.rerun()  # Finales Rendering mit sauberem Tab-Dashboard
+
+    # ── Dashboard (nach Abschluss) ──
+    elif st.session_state.all_results:
+        doc_names = list(st.session_state.all_results.keys())
+
+        if len(doc_names) == 1:
+            st.header("Ergebnis Dashboard")
+            show_document_result(doc_names[0], st.session_state.all_results[doc_names[0]])
         else:
-            st.info("Bitte Dokumente hochladen und die Schritte 1 bis 3 ausführen.")
+            st.header(f"Ergebnis Dashboard — {len(doc_names)} Dokumente")
+            labels = []
+            for name in doc_names:
+                base = os.path.splitext(name)[0]
+                labels.append((base[:28] + "…") if len(base) > 28 else base)
+            doc_tabs = st.tabs(labels)
+            for i, tab in enumerate(doc_tabs):
+                with tab:
+                    show_document_result(doc_names[i], st.session_state.all_results[doc_names[i]])
+    else:
+        st.info("PDFs hochladen und **Start Analyse** drücken.")
 
-    with tab2:
-        st.markdown(st.session_state.extracted_text)
 
 if __name__ == "__main__":
     main()
